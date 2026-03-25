@@ -192,7 +192,7 @@ function lexer:number()
 			end
 			self:advance()
 		end
-		if self.char == "e" and self.char == "E" then
+		if self.char == "e" or self.char == "E" then
 			table.insert(result, self.char)
 			self:advance()
 			if self.char == "+" or self.char == "-" then
