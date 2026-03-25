@@ -341,109 +341,161 @@ function compiler:_repeat(node)
 	self:run(node.body)
 	self:run(node.condition) -- condition is checked at the end
 	self:pop_scope()
-	self:emit(OPCODES.NOT) -- repeat until condition is TRUE, so we flip it
+	self:emit(OPCODES.NOT) -- repeat until condition is true
 	self:emit(OPCODES.JUMP_IF_FALSE, loop_start)
 end
 
 function compiler:numeric_for(node)
 	self:push_scope()
+
 	self:run(node.start)
-	self:add_local(node.name)
-	self:emit(OPCODES.STORE_LOCAL, self:get_local(node.name))
+	local i_reg = self:add_local(node.name)
+	self:emit(OPCODES.STORE_LOCAL, i_reg)
+
 	self:run(node.limit)
-	local limit_reg = self.chunk.num_locals
-	self:add_local("__limit__")
+	local limit_reg = self:add_local("__limit__")
 	self:emit(OPCODES.STORE_LOCAL, limit_reg)
 
 	if node.step then
 		self:run(node.step)
 	else
-		local idx = self:add_constant(1)
-		self:emit(OPCODES.LOAD_CONST, idx)
+		self:emit(OPCODES.LOAD_CONST, self:add_constant(1))
 	end
-	local step_reg = self.chunk.num_locals
-	self:add_constant("__limit__")
+	local step_reg = self:add_local("__step__")
 	self:emit(OPCODES.STORE_LOCAL, step_reg)
 
-	local loop_start = #self.chunk.code
+	-- check step > 0 once
+	self:emit(OPCODES.LOAD_LOCAL, step_reg)
+	self:emit(OPCODES.LOAD_CONST, self:add_constant(0))
+	self:emit(OPCODES.GT)
+	local jump_neg = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP_IF_FALSE, 0)
 
-	-- check if i<=limit
-	self:emit(OPCODES.LOAD_LOCAL, self:get_local(node.name))
+	-- while i<= limit
+	local pos_start = #self.chunk.code
+	self:emit(OPCODES.LOAD_LOCAL, i_reg)
 	self:emit(OPCODES.LOAD_LOCAL, limit_reg)
 	self:emit(OPCODES.LTE)
-	local jump_false = #self.chunk.code + 1
+	local pos_exit = #self.chunk.code + 1
 	self:emit(OPCODES.JUMP_IF_FALSE, 0)
 	self:run(node.body)
-
-	-- i = i + step
-	self:emit(OPCODES.LOAD_LOCAL, self:get_local(node.name))
+	self:emit(OPCODES.LOAD_LOCAL, i_reg)
 	self:emit(OPCODES.LOAD_LOCAL, step_reg)
 	self:emit(OPCODES.ADD)
-	self:emit(OPCODES.STORE_LOCAL, self:get_local(node.name))
+	self:emit(OPCODES.STORE_LOCAL, i_reg)
+	self:emit(OPCODES.JUMP, pos_start)
+	self.chunk.code[pos_exit + 1] = #self.chunk.code
 
-	self:emit(OPCODES.JUMP, loop_start)
-	self.chunk.code[jump_false + 1] = #self.chunk.code
+	-- jump over negative loop
+	local jump_over_neg = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP, 0)
 
+	-- while i >= limit
+	self.chunk.code[jump_neg + 1] = #self.chunk.code
+	local neg_start = #self.chunk.code
+	self:emit(OPCODES.LOAD_LOCAL, i_reg)
+	self:emit(OPCODES.LOAD_LOCAL, limit_reg)
+	self:emit(OPCODES.GTE)
+	local neg_exit = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP_IF_FALSE, 0)
+	self:run(node.body)
+	self:emit(OPCODES.LOAD_LOCAL, i_reg)
+	self:emit(OPCODES.LOAD_LOCAL, step_reg)
+	self:emit(OPCODES.ADD)
+	self:emit(OPCODES.STORE_LOCAL, i_reg)
+	self:emit(OPCODES.JUMP, neg_start)
+	self.chunk.code[neg_exit + 1] = #self.chunk.code
+
+	self.chunk.code[jump_over_neg + 1] = #self.chunk.code
 	self:pop_scope()
 end
 
 function compiler:generic_for(node)
 	self:push_scope()
-	for i, itr in pairs(node.iterators) do
+
+	for _, itr in ipairs(node.iterators) do
 		self:run(itr)
 	end
-	local iter_reg = self.chunk.num_locals
-	self:add_local("__iter__")
-	self:emit(OPCODES.STORE_LOCAL, iter_reg)
 
-	-- declare loop vars
-	for i, name in ipairs(node.names) do
-		self:add_local(name)
+	local var_reg = self:add_local("__var__")
+	self:emit(OPCODES.STORE_LOCAL, var_reg)
+
+	local state_reg = self:add_local("__state__")
+	self:emit(OPCODES.STORE_LOCAL, state_reg)
+
+	local func_reg = self:add_local("__func__")
+	self:emit(OPCODES.STORE_LOCAL, func_reg)
+
+	local loop_vars = {}
+	for _, name in ipairs(node.names) do
+		local reg = self:add_local(name)
+		table.insert(loop_vars, reg)
 		self:emit(OPCODES.PUSH_NIL)
-		self:emit(OPCODES.STORE_LOCAL, self:get_local(name))
+		self:emit(OPCODES.STORE_LOCAL, reg)
 	end
 
 	local loop_start = #self.chunk.code
 
-	-- call iterator
-	self:emit(OPCODES.LOAD_LOCAL, iter_reg)
-	self:emit(OPCODES.STORE_LOCAL, 0)
+	self:emit(OPCODES.LOAD_LOCAL, func_reg)
+	self:emit(OPCODES.LOAD_LOCAL, state_reg)
+	self:emit(OPCODES.LOAD_LOCAL, var_reg)
+	self:emit(OPCODES.CALL, 2)
 
-	-- store result into loop variables
-	for i, name in ipairs(node.names) do
-		self:emit(OPCODES.STORE_LOCAL, self:get_local(name))
+	for _, reg in ipairs(loop_vars) do
+		self:emit(OPCODES.STORE_LOCAL, reg)
 	end
 
-	-- if first loop var is nil then exit:
-	self:emit(OPCODES.LOAD_LOCAL, self:get_local(node.names[1]))
-	self:emit(OPCODES.PUSH_NILl)
+	self:emit(OPCODES.LOAD_LOCAL, loop_vars[1])
+	self:emit(OPCODES.STORE_LOCAL, var_reg)
+
+	self:emit(OPCODES.LOAD_LOCAL, var_reg)
+	self:emit(OPCODES.PUSH_NIL)
 	self:emit(OPCODES.EQ)
-	local jump_exit = #self.chunk.code + 1
+
+	local jump_continue = #self.chunk.code + 1
 	self:emit(OPCODES.JUMP_IF_FALSE, 0)
+
+	local jump_exit = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP, 0)
+
+	self.chunk.code[jump_continue + 1] = #self.chunk.code
 
 	self:run(node.body)
 	self:emit(OPCODES.JUMP, loop_start)
 
 	self.chunk.code[jump_exit + 1] = #self.chunk.code
+
 	self:pop_scope()
 end
 
-function compiler:method_call(node)
-	-- we are converting obj:method(...) to obj.method(obj, ...)
-	self:run(node.object) -- push object
-	self:emit(OPCODES.LOAD_LOCAL, 0) -- push object again as first arg (self)
+function compiler:_method_call(node)
+	self:run(node.object)
+
+	local tmp = self:add_local("__self__")
+	self:emit(OPCODES.STORE_LOCAL, tmp)
+
+	-- get the method from the object
+	self:emit(OPCODES.LOAD_LOCAL, tmp)
 	local idx = self:add_constant(node.method)
-	self:emit(OPCODES.GET_FIELD, idx) -- get method
-	for i, arg in ipairs(node.args) do
+	self:emit(OPCODES.GET_FIELD, idx) -- push the method
+
+	-- push object as first argument (self)
+	self:emit(OPCODES.LOAD_LOCAL, tmp)
+
+	for _, arg in ipairs(node.args) do
 		self:run(arg)
 	end
-	self:emit(OPCODES.CALL, #node.args + 1) -- extra slot for implicit self
+	self:emit(OPCODES.CALL, #node.args + 1) -- +1 for implicit self
+
+	-- clean up temp
+	self.chunk.locals["__self__"] = nil
+	self.chunk.num_locals -= 1
 end
 
 function compiler:_table(node)
 	self:emit(OPCODES.NEW_TABLE)
 	for i, field in ipairs(node.fields) do
-		if field.kind == "NameField" then
+		if field.kind == "NamedField" then
 			-- {key = value}
 			self:run(field.value)
 			local idx = self:add_constant(field.key)
