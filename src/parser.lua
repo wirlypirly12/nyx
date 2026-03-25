@@ -173,7 +173,7 @@ function parser:parse_for()
 		self:expect("KEYWORD", "do")
 		local body = self:parse_block({ "end" })
 		self:expect("KEYWORD", "end")
-		return { kind = "GenericFor", names = name, iterators = itr, body = body }
+		return { kind = "GenericFor", names = names, iterators = itr, body = body }
 	end
 end
 
