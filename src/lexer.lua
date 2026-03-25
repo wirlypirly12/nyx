@@ -265,7 +265,7 @@ function lexer:symbol()
 		self:emit(TOKEN_TYPES.SYMBOL, self.char)
 		self:advance()
 	else
-		error(`unexpected character: {tostring(self.char)} at line {self.line} col: {self.column}`)
+		error(`unexpected character: {self.char} at line {self.line} col: {self.column}`)
 	end
 end
 

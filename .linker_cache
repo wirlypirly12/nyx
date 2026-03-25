@@ -1,2 +1,4 @@
-main.lua 13418937804
-src/lexer.lua 13418893221
+main.lua 13418942781
+src/lexer.lua 13418941237
+src/parser.lua 13418942928
+tests/lexertest.lua 13418938058
