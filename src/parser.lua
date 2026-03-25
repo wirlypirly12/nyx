@@ -141,7 +141,7 @@ function parser:parse_while()
 	return { kind = "WhileStatement", condition = cond, body = body }
 end
 
-function parser:parser_for()
+function parser:parse_for()
 	self:expect("KEYWORD", "for")
 	local name = self:expect("IDENTIFIER").value
 
@@ -456,10 +456,6 @@ function parser:run()
 		table.insert(statements, self:parse_statement())
 	end
 	return { kind = "Block", body = statements }
-end
-
-function parser:dump(node)
-	print(self:serialize(node))
 end
 
 function parser:serialize(node, indent)
