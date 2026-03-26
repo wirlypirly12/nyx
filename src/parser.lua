@@ -1,4 +1,3 @@
--- expression parsing using pratt parsing for operator precedence
 local BINARY_PRECEDENCE = {
 	["or"] = 1,
 	["and"] = 2,
@@ -15,7 +14,7 @@ local BINARY_PRECEDENCE = {
 	["/"] = 6,
 	["%"] = 6,
 	["//"] = 6,
-	["^"] = 7, -- right associative
+	["^"] = 7,
 }
 local RIGHT_ASSOC = { ["^"] = true, [".."] = true }
 
@@ -27,14 +26,13 @@ function parser.new(tokens)
 		tokens = tokens,
 		pos = 1,
 	}, parser)
-
 	return self
 end
 
 function parser:peek(offset)
 	offset = offset or 0
 	local t = self.tokens[self.pos + offset]
-	return t or { type = "EOF", value = nil } -- if the specified token doesn't exist, we probably hit EOF
+	return t or { type = "EOF", value = nil }
 end
 
 function parser:advance()
@@ -62,16 +60,13 @@ end
 function parser:parse_local()
 	self:expect("KEYWORD", "local")
 
-	-- parse local func
 	if self:peek().type == "KEYWORD" and self:peek().value == "function" then
 		self:advance()
-
 		local name = self:expect("IDENTIFIER").value
 		local func = self:parse_function_body()
 		return { kind = "LocalFunction", name = name, func = func }
 	end
 
-	-- local a, b, c
 	local names = { self:expect("IDENTIFIER").value }
 	while self:match("SYMBOL", ",") do
 		table.insert(names, self:expect("IDENTIFIER").value)
@@ -95,8 +90,13 @@ function parser:parse_block(stop_at)
 		stop[v] = true
 	end
 	while self:peek().type ~= "EOF" and not stop[self:peek().value] do
-		table.insert(statements, self:parse_statement())
-		self:match("SYMBOL", ";") -- allow semicolons!
+		local stmt = self:parse_statement()
+		table.insert(statements, stmt)
+		self:match("SYMBOL", ";")
+
+		if stmt.kind == "ReturnStatement" then
+			break
+		end
 	end
 	return { kind = "Block", body = statements }
 end
@@ -139,7 +139,6 @@ function parser:parse_for()
 	local name = self:expect("IDENTIFIER").value
 
 	if self:match("OPERATOR", "=") then
-		-- for x = x, x
 		local start = self:parse_expression()
 		self:expect("SYMBOL", ",")
 		local limit = self:parse_expression()
@@ -152,9 +151,7 @@ function parser:parse_for()
 		self:expect("KEYWORD", "end")
 		return { kind = "NumericFor", name = name, start = start, limit = limit, step = step, body = body }
 	else
-		-- for x, x in x do
 		local names = { name }
-
 		while self:match("SYMBOL", ",") do
 			table.insert(names, self:expect("IDENTIFIER").value)
 		end
@@ -162,6 +159,15 @@ function parser:parse_for()
 		local itr = { self:parse_expression() }
 		while self:match("SYMBOL", ",") do
 			table.insert(itr, self:parse_expression())
+		end
+
+		if #itr == 1 and itr[1].kind ~= "CallExpr" and itr[1].kind ~= "MethodCall" then
+			local tbl_expr = itr[1]
+			itr = {
+				{ kind = "Identifier", name = "next" },
+				tbl_expr,
+				{ kind = "Nil" },
+			}
 		end
 		self:expect("KEYWORD", "do")
 		local body = self:parse_block({ "end" })
@@ -174,7 +180,6 @@ function parser:parse_function()
 	self:expect("KEYWORD", "function")
 	local name = self:expect("IDENTIFIER").value
 
-	-- handle methods and index
 	local chain = { name }
 	local is_method = false
 	while self:peek().value == "." do
@@ -194,7 +199,7 @@ function parser:parse_function_body(is_method)
 	self:expect("SYMBOL", "(")
 	local params = {}
 	if is_method then
-		table.insert(params, "self") -- implicit self
+		table.insert(params, "self")
 	end
 	if self:peek().value ~= ")" then
 		if self:peek().value == "..." then
@@ -236,7 +241,15 @@ end
 function parser:parse_return()
 	self:expect("KEYWORD", "return")
 	local values = {}
-	if self:peek().type ~= "EOF" and self:peek().value ~= "end" then
+
+	local t = self:peek()
+	local stop = t.type == "EOF"
+		or t.value == "end"
+		or t.value == "else"
+		or t.value == "elseif"
+		or t.value == "until"
+		or (t.type == "SYMBOL" and t.value == ";")
+	if not stop then
 		table.insert(values, self:parse_expression())
 		while self:match("SYMBOL", ",") do
 			table.insert(values, self:parse_expression())
@@ -267,6 +280,12 @@ function parser:parse_postfix()
 			local method = self:expect("IDENTIFIER").value
 			local args = self:parse_call_args()
 			node = { kind = "MethodCall", object = node, method = method, args = args }
+		elseif t.type == "STRING" then
+			self:advance()
+			node = { kind = "CallExpr", callee = node, args = { { kind = "String", value = t.value } } }
+		elseif t.value == "{" then
+			local tbl = self:parse_table()
+			node = { kind = "CallExpr", callee = node, args = { tbl } }
 		else
 			break
 		end
@@ -335,7 +354,7 @@ function parser:parse_primary()
 		return { kind = "Identifier", name = "..." }
 	end
 
-	error(`unexpected token '{t.value}' at line {t.line}`)
+	error(`unexpected token '{t.value}' (type={t.type}) at line {t.line}`)
 end
 
 function parser:parse_table()
@@ -351,19 +370,16 @@ function parser:parse_table()
 			local value = self:parse_expression()
 			table.insert(fields, { kind = "IndexedField", key = key, value = value })
 		elseif self:peek().type == "IDENTIFIER" and self:peek(1).value == "=" then
-			-- name = value
 			local key = self:advance().value
-			self:advance() -- skip '='
+			self:advance()
 			local value = self:parse_expression()
 			table.insert(fields, { kind = "NamedField", key = key, value = value })
 		else
-			-- plain value
 			local value = self:parse_expression()
 			table.insert(fields, { kind = "ValueField", value = value })
 		end
 
-		if not self:match("SYMBOL", ",") then
-			self:match("SYMBOL", ";")
+		if not self:match("SYMBOL", ",") and not self:match("SYMBOL", ";") then
 			break
 		end
 	end
@@ -375,22 +391,22 @@ end
 function parser:parse_expression_statement()
 	local expr = self:parse_postfix()
 
-	-- collect multiple targets: a, b, c = ...
 	local targets = { expr }
 	while self:peek().value == "," do
 		if expr.kind == "CallExpr" or expr.kind == "MethodCall" then
 			break
 		end
-		self:advance() -- skip ','
+		self:advance()
 		table.insert(targets, self:parse_postfix())
 	end
 
+	local op_tok = self:peek()
 	if
-		self:peek().value == "="
-		or self:peek().value == "+="
-		or self:peek().value == "-="
-		or self:peek().value == "*="
-		or self:peek().value == "/="
+		op_tok.value == "="
+		or op_tok.value == "+="
+		or op_tok.value == "-="
+		or op_tok.value == "*="
+		or op_tok.value == "/="
 	then
 		local op = self:advance().value
 		local values = { self:parse_expression() }
@@ -457,7 +473,10 @@ function parser:parse_statement()
 			return self:parse_repeat()
 		elseif t.value == "break" then
 			self:advance()
-			return { Kind = "Break" }
+			return { kind = "Break" }
+		elseif t.value == "continue" then
+			self:advance()
+			return { kind = "Continue" }
 		end
 	end
 	return self:parse_expression_statement()
@@ -467,6 +486,7 @@ function parser:run()
 	local statements = {}
 	while self:peek().type ~= "EOF" do
 		table.insert(statements, self:parse_statement())
+		self:match("SYMBOL", ";")
 	end
 	return { kind = "Block", body = statements }
 end
