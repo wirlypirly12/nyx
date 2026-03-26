@@ -5,12 +5,13 @@ local OPNAMES = {
 	"LOAD_LOCAL", -- push locals[arg] onto stack
 	"STORE_LOCAL", -- pop stack into locals[arg]
 	"LOAD_GLOBAL", -- push globals[constants[arg]] onto stack
-	"LOAD_UPVALUE",
+	"LOAD_UPVALUE", -- push upvalue onto stack
 	"STORE_GLOBAL", -- pop stack into globals[constants[arg]]
 	"PUSH_NIL", -- push nil
 	"PUSH_TRUE", -- push true
 	"PUSH_FALSE", -- push false
 	"POP", -- discard top of stack
+	"CALL_MULTI",
 
 	-- arithmetic
 	"ADD",

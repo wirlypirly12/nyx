@@ -37,6 +37,7 @@ function vm:load_stdlib()
 	self.globals["rawequal"] = rawequal
 	self.globals["setmetatable"] = setmetatable
 	self.globals["getmetatable"] = getmetatable
+	self.globals["game"] = game
 
 	self.globals["math"] = {
 		floor = math.floor,
@@ -274,11 +275,9 @@ function vm:execute(chunk, args, upvalues)
 			local idx = frame.chunk.code[frame.ip]
 			local sub_chunk = frame.chunk.constants[idx + 1]
 			local f_upvalues = {}
-			-- capture by name using the chunk's constants as a guide
 			for name, reg in pairs(frame.chunk.locals) do
 				f_upvalues[name] = frame.locals[reg]
 			end
-			-- also inherit any upvalues from the current frame
 			if frame.upvalues then
 				for k, v in pairs(frame.upvalues) do
 					if f_upvalues[k] == nil then
@@ -294,7 +293,6 @@ function vm:execute(chunk, args, upvalues)
 		elseif op == OPCODES.CALL then
 			frame.ip += 1
 			local arg_count = frame.chunk.code[frame.ip]
-			-- pop args in reverse
 			local f_args = {}
 			for i = arg_count, 1, -1 do
 				f_args[i] = self:pop(frame)
@@ -302,15 +300,37 @@ function vm:execute(chunk, args, upvalues)
 			local func = self:pop(frame)
 			if type(func) == "function" then
 				local result = table.pack(func(table.unpack(f_args)))
-				for i = 1, result.n do
-					self:push(frame, result[i])
-				end
+				-- only push first return value for normal calls
+				self:push(frame, result[1])
 			elseif type(func) == "table" and func.__type == "function" then
 				local result = self:execute(func.chunk, f_args, func.upvalues)
 				if result then
-					for i, v in ipairs(result) do
-						self:push(frame, v)
-					end
+					self:push(frame, result[1])
+				else
+					self:push(frame, nil)
+				end
+			else
+				error(`attempt to call a {type(func)} value`)
+			end
+		elseif op == OPCODES.CALL_MULTI then
+			frame.ip += 1
+			local arg_count = frame.chunk.code[frame.ip]
+			local expected = frame.chunk.code[frame.ip + 1]
+			frame.ip += 1
+			local f_args = {}
+			for i = arg_count, 1, -1 do
+				f_args[i] = self:pop(frame)
+			end
+			local func = self:pop(frame)
+			if type(func) == "function" then
+				local result = table.pack(func(table.unpack(f_args)))
+				for i = 1, expected do
+					self:push(frame, result[i]) -- result[i] is nil if i > result.n
+				end
+			elseif type(func) == "table" and func.__type == "function" then
+				local result = self:execute(func.chunk, f_args, func.upvalues) or {}
+				for i = 1, expected do
+					self:push(frame, result[i])
 				end
 			else
 				error(`attempt to call a {type(func)} value`)
