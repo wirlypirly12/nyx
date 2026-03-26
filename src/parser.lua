@@ -1,10 +1,3 @@
-type LexerToken = {
-	type: string,
-	value: any,
-	line: number,
-	column: number,
-}
-
 -- expression parsing using pratt parsing for operator precedence
 local BINARY_PRECEDENCE = {
 	["or"] = 1,
@@ -29,7 +22,7 @@ local RIGHT_ASSOC = { ["^"] = true, [".."] = true }
 local parser = {}
 parser.__index = parser
 
-function parser.new(tokens: { [number]: LexerToken })
+function parser.new(tokens)
 	local self = setmetatable({
 		tokens = tokens,
 		pos = 1,
@@ -38,19 +31,19 @@ function parser.new(tokens: { [number]: LexerToken })
 	return self
 end
 
-function parser:peek(offset): LexerToken
+function parser:peek(offset)
 	offset = offset or 0
 	local t = self.tokens[self.pos + offset]
 	return t or { type = "EOF", value = nil } -- if the specified token doesn't exist, we probably hit EOF
 end
 
-function parser:advance(): LexerToken
+function parser:advance()
 	local t = self.tokens[self.pos]
 	self.pos = self.pos + 1
 	return t
 end
 
-function parser:match(type, value): LexerToken | nil
+function parser:match(type, value)
 	local t = self:peek()
 	if t.type == type and (value == nil or t.value == value) then
 		return self:advance()
@@ -58,7 +51,7 @@ function parser:match(type, value): LexerToken | nil
 	return nil
 end
 
-function parser:expect(type, value): LexerToken
+function parser:expect(type, value)
 	local t = self:peek()
 	if t.type ~= type or (value and t.value ~= value) then
 		error(`expected {value or type} but got '{t.value}' at line {t.line}`)
@@ -98,7 +91,7 @@ end
 function parser:parse_block(stop_at)
 	local statements = {}
 	local stop = {}
-	for i, v in ipairs(stop_at) do
+	for i, v in stop_at do
 		stop[v] = true
 	end
 	while self:peek().type ~= "EOF" and not stop[self:peek().value] do
@@ -159,7 +152,7 @@ function parser:parse_for()
 		self:expect("KEYWORD", "end")
 		return { kind = "NumericFor", name = name, start = start, limit = limit, step = step, body = body }
 	else
-		-- for x, x in pairs(x) do
+		-- for x, x in x do
 		local names = { name }
 
 		while self:match("SYMBOL", ",") do
@@ -469,7 +462,7 @@ function parser:serialize(node, indent)
 
 	if node.kind then
 		local parts = {}
-		for k, v in pairs(node) do
+		for k, v in node do
 			if k ~= "kind" then
 				table.insert(parts, inner .. k .. " = " .. self:serialize(v, indent + 1))
 			end
@@ -480,7 +473,7 @@ function parser:serialize(node, indent)
 		return "[" .. node.kind .. "]\n" .. table.concat(parts, "\n")
 	elseif #node > 0 then
 		local parts = {}
-		for i, v in ipairs(node) do
+		for i, v in node do
 			table.insert(parts, inner .. self:serialize(v, indent + 1))
 		end
 		return "{\n" .. table.concat(parts, ",\n") .. "\n" .. pad .. "}"

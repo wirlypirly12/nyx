@@ -34,7 +34,7 @@ local KEYWORDS = {
 	["nil"] = true,
 }
 
-function lexer.new(source: string)
+function lexer.new(source)
 	local self = setmetatable({
 		line = 1,
 		pos = 1,
@@ -94,8 +94,8 @@ function lexer:skip_comment()
 			local level = 0
 			local i = 1
 			while self:peek(i) == "=" do
-				level += 1
-				i += 1
+				level = level + 1
+				i = i + 1
 			end
 
 			if self:peek(i) == "[" then
@@ -110,8 +110,8 @@ function lexer:skip_comment()
 						local close_level = 0
 						local j = 1
 						while self:peek(j) == "=" do
-							close_level += 1
-							j += 1
+							close_level = close_level + 1
+							j = j + 1
 						end
 						if close_level == level and self:peek(j) == "]" then
 							self:advance() -- skip ]

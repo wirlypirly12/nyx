@@ -1,13 +1,13 @@
 -- linker source map
 -- bundle  : Nyx.luau
--- built   : 2026-03-25 18:33:34
+-- built   : 2026-03-25 22:12:25
 --
 -- error on line N?  find the range below that contains N
 --
 -- start     end        file
 26          332         src/lexer.lua
-336         828         src/parser.lua
-832         898         src/opcodes.lua
-902         1528        src/compiler.lua
-1532        1543        tests/compilerTest.lua
-1546        1561        main.lua
+336         821         src/parser.lua
+825         895         src/opcodes.lua
+899         1518        src/compiler.lua
+1522        1861        src/vm.lua
+1864        1887        main.lua

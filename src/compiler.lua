@@ -1,11 +1,11 @@
 local compiler = {}
 compiler.__index = compiler
 
-local OPCODES = require("./opcodes")
-local OPNAMES = {}
-
-for i, v in OPCODES do
-	OPNAMES[v] = i
+local OPCODES, OPNAMES
+do
+	local export = require("./opcodes")
+	OPCODES = export.CODES
+	OPNAMES = export.NAMES
 end
 
 function compiler.new()
@@ -28,7 +28,7 @@ end
 
 function compiler:pop_scope()
 	local scope = table.remove(self.chunk.scope_stack)
-	for name, info in pairs(scope) do
+	for name, info in scope do
 		self.chunk.locals[name] = info.prev
 		self.chunk.num_locals -= 1
 	end
@@ -36,13 +36,13 @@ end
 function compiler:emit(op, ...)
 	local args = { ... }
 	table.insert(self.chunk.code, op)
-	for i, v in ipairs(args) do
+	for i, v in args do
 		table.insert(self.chunk.code, v)
 	end
 end
 
 function compiler:add_constant(value)
-	for i, v in ipairs(self.chunk.constants) do
+	for i, v in self.chunk.constants do
 		if v == value then
 			return i - 1 -- reuse constants
 		end
@@ -59,7 +59,7 @@ function compiler:add_local(name)
 		scope[name] = { reg = reg, prev = self.chunk.locals[name] }
 	end
 	self.chunk.locals[name] = reg
-	self.chunk.num_locals += 1
+	self.chunk.num_locals = self.chunk.num_locals + 1
 	return reg
 end
 function compiler:get_local(name)
@@ -163,7 +163,7 @@ end
 
 function compiler:block(node)
 	self:push_scope()
-	for _, stmt in ipairs(node.body) do
+	for _, stmt in node.body do
 		self:run(stmt)
 	end
 	self:pop_scope()
@@ -195,7 +195,7 @@ end
 
 function compiler:_local(node)
 	-- compile values then connect names to values
-	for i, name in ipairs(node.names) do
+	for i, name in node.names do
 		local value = node.values[i]
 		if value then
 			self:run(value)
@@ -278,9 +278,9 @@ function compiler:_if(node)
 
 	local jump_end = #self.chunk.code + 1
 	self:emit(OPCODES.JUMP, 0)
-	self.chunk.code[jump_false + 1] = #self.chunk.code
+	self.chunk.code[jump_false + 1] = #self.chunk.code + 1
 
-	for _, ei in ipairs(node.elseifs) do
+	for _, ei in node.elseifs do
 		self:push_scope()
 		self:run(ei.body)
 		self:pop_scope()
@@ -292,14 +292,14 @@ function compiler:_if(node)
 		self:pop_scope()
 	end
 
-	self.chunk.code[jump_end + 1] = #self.chunk.code
+	self.chunk.code[jump_end + 1] = #self.chunk.code + 1
 end
 
 function compiler:_function(node)
 	-- create a new compiler for the func body
 	local sub = compiler.new()
 	-- add params as locals in the sub compiler
-	for i, param in ipairs(node.params) do
+	for i, param in node.params do
 		sub:add_local(param)
 	end
 	sub:push_scope()
@@ -336,13 +336,13 @@ function compiler:function_statement(node)
 end
 
 function compiler:_repeat(node)
-	local loop_start = #self.chunk.code
+	local loop_start = #self.chunk.code + 1
 	self:push_scope()
 	self:run(node.body)
 	self:run(node.condition) -- condition is checked at the end
 	self:pop_scope()
 	self:emit(OPCODES.NOT) -- repeat until condition is true
-	self:emit(OPCODES.JUMP_IF_FALSE, loop_start)
+	self:emit(OPCODES.JUMP_IF_FALSE, loop_start + 1)
 end
 
 function compiler:numeric_for(node)
@@ -372,7 +372,7 @@ function compiler:numeric_for(node)
 	self:emit(OPCODES.JUMP_IF_FALSE, 0)
 
 	-- while i<= limit
-	local pos_start = #self.chunk.code
+	local pos_start = #self.chunk.code + 1
 	self:emit(OPCODES.LOAD_LOCAL, i_reg)
 	self:emit(OPCODES.LOAD_LOCAL, limit_reg)
 	self:emit(OPCODES.LTE)
@@ -384,15 +384,15 @@ function compiler:numeric_for(node)
 	self:emit(OPCODES.ADD)
 	self:emit(OPCODES.STORE_LOCAL, i_reg)
 	self:emit(OPCODES.JUMP, pos_start)
-	self.chunk.code[pos_exit + 1] = #self.chunk.code
+	self.chunk.code[pos_exit + 1] = #self.chunk.code + 1
 
 	-- jump over negative loop
 	local jump_over_neg = #self.chunk.code + 1
 	self:emit(OPCODES.JUMP, 0)
 
 	-- while i >= limit
-	self.chunk.code[jump_neg + 1] = #self.chunk.code
-	local neg_start = #self.chunk.code
+	self.chunk.code[jump_neg + 1] = #self.chunk.code + 1
+	local neg_start = #self.chunk.code + 1
 	self:emit(OPCODES.LOAD_LOCAL, i_reg)
 	self:emit(OPCODES.LOAD_LOCAL, limit_reg)
 	self:emit(OPCODES.GTE)
@@ -404,16 +404,16 @@ function compiler:numeric_for(node)
 	self:emit(OPCODES.ADD)
 	self:emit(OPCODES.STORE_LOCAL, i_reg)
 	self:emit(OPCODES.JUMP, neg_start)
-	self.chunk.code[neg_exit + 1] = #self.chunk.code
+	self.chunk.code[neg_exit + 1] = #self.chunk.code + 1
 
-	self.chunk.code[jump_over_neg + 1] = #self.chunk.code
+	self.chunk.code[jump_over_neg + 1] = #self.chunk.code + 1
 	self:pop_scope()
 end
 
 function compiler:generic_for(node)
 	self:push_scope()
 
-	for _, itr in ipairs(node.iterators) do
+	for _, itr in node.iterators do
 		self:run(itr)
 	end
 
@@ -427,43 +427,36 @@ function compiler:generic_for(node)
 	self:emit(OPCODES.STORE_LOCAL, func_reg)
 
 	local loop_vars = {}
-	for _, name in ipairs(node.names) do
+	for _, name in node.names do
 		local reg = self:add_local(name)
 		table.insert(loop_vars, reg)
 		self:emit(OPCODES.PUSH_NIL)
 		self:emit(OPCODES.STORE_LOCAL, reg)
 	end
 
-	local loop_start = #self.chunk.code
+	local loop_start = #self.chunk.code + 1
 
 	self:emit(OPCODES.LOAD_LOCAL, func_reg)
 	self:emit(OPCODES.LOAD_LOCAL, state_reg)
 	self:emit(OPCODES.LOAD_LOCAL, var_reg)
 	self:emit(OPCODES.CALL, 2)
 
-	for _, reg in ipairs(loop_vars) do
-		self:emit(OPCODES.STORE_LOCAL, reg)
+	for i = #loop_vars, 1, -1 do
+		self:emit(OPCODES.STORE_LOCAL, loop_vars[i])
 	end
 
 	self:emit(OPCODES.LOAD_LOCAL, loop_vars[1])
 	self:emit(OPCODES.STORE_LOCAL, var_reg)
 
 	self:emit(OPCODES.LOAD_LOCAL, var_reg)
-	self:emit(OPCODES.PUSH_NIL)
-	self:emit(OPCODES.EQ)
 
-	local jump_continue = #self.chunk.code + 1
+	local jump_out = #self.chunk.code + 1
 	self:emit(OPCODES.JUMP_IF_FALSE, 0)
-
-	local jump_exit = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP, 0)
-
-	self.chunk.code[jump_continue + 1] = #self.chunk.code
 
 	self:run(node.body)
 	self:emit(OPCODES.JUMP, loop_start)
 
-	self.chunk.code[jump_exit + 1] = #self.chunk.code
+	self.chunk.code[jump_out + 1] = #self.chunk.code + 1
 
 	self:pop_scope()
 end
@@ -482,7 +475,7 @@ function compiler:_method_call(node)
 	-- push object as first argument (self)
 	self:emit(OPCODES.LOAD_LOCAL, tmp)
 
-	for _, arg in ipairs(node.args) do
+	for _, arg in node.args do
 		self:run(arg)
 	end
 	self:emit(OPCODES.CALL, #node.args + 1) -- +1 for implicit self
@@ -494,7 +487,7 @@ end
 
 function compiler:_table(node)
 	self:emit(OPCODES.NEW_TABLE)
-	for i, field in ipairs(node.fields) do
+	for i, field in node.fields do
 		if field.kind == "NamedField" then
 			-- {key = value}
 			self:run(field.value)
@@ -515,7 +508,7 @@ function compiler:_table(node)
 end
 
 function compiler:_while(node)
-	local loop_start = #self.chunk.code
+	local loop_start = #self.chunk.code + 1
 	self:run(node.condition)
 	local jump_false = #self.chunk.code + 1
 	self:emit(OPCODES.JUMP_IF_FALSE, 0)
@@ -526,17 +519,17 @@ function compiler:_while(node)
 	self:pop_scope()
 
 	self:emit(OPCODES.JUMP, loop_start)
-	self.chunk.code[jump_false + 1] = #self.chunk.code
+	self.chunk.code[jump_false + 1] = #self.chunk.code + 1
 
 	-- patch all breaks to here
-	for _, jump in ipairs(self.chunk.break_jumps) do
-		self.chunk.code[jump + 1] = #self.chunk.code
+	for _, jump in self.chunk.break_jumps do
+		self.chunk.code[jump + 1] = #self.chunk.code + 1
 	end
 	self.chunk.break_jumps = nil
 end
 
 function compiler:_return(node)
-	for _, v in ipairs(node.values) do
+	for _, v in node.values do
 		self:run(v)
 	end
 	self:emit(OPCODES.RETURN, #node.values)
@@ -544,7 +537,7 @@ end
 
 function compiler:call(node)
 	self:run(node.callee)
-	for _, arg in ipairs(node.args) do
+	for _, arg in node.args do
 		self:run(arg)
 	end
 	self:emit(OPCODES.CALL, #node.args)
@@ -568,13 +561,13 @@ function compiler:dump()
 
 	-- constants
 	print("CONSTANTS (" .. #chunk.constants .. ")")
-	for i, v in ipairs(chunk.constants) do
+	for i, v in chunk.constants do
 		print(string.format("  [%d] %-10s %s", i - 1, type(v), tostring(v)))
 	end
 
 	-- locals
 	print("\nLOCALS (" .. chunk.num_locals .. ")")
-	for name, reg in pairs(chunk.locals) do
+	for name, reg in chunk.locals do
 		print(string.format("  [%d] %s", reg, name))
 	end
 
@@ -604,7 +597,7 @@ function compiler:dump()
 
 		if has_arg[name] then
 			local arg = chunk.code[i + 1]
-			-- if its a constant-referencing op, show the value too
+			-- if its a constant referencing op, show the value too
 			local extra = ""
 			if
 				(name == "LOAD_CONST" or name == "LOAD_GLOBAL" or name == "STORE_GLOBAL" or name == "GET_FIELD")

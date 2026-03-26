@@ -5,6 +5,7 @@ local OPNAMES = {
 	"LOAD_LOCAL", -- push locals[arg] onto stack
 	"STORE_LOCAL", -- pop stack into locals[arg]
 	"LOAD_GLOBAL", -- push globals[constants[arg]] onto stack
+	"LOAD_UPVALUE",
 	"STORE_GLOBAL", -- pop stack into globals[constants[arg]]
 	"PUSH_NIL", -- push nil
 	"PUSH_TRUE", -- push true
@@ -63,4 +64,7 @@ for i = 1, #OPNAMES do
 	OPCODES[OPNAMES[i]] = i
 end
 
-return OPCODES
+return {
+	CODES = OPCODES,
+	NAMES = OPNAMES,
+}

@@ -1,9 +1,5 @@
 return [[
-local t = {
-    ["G"] = "Hello",
-    ["H"] = "World!"
-}
-for i, v in pairs(t) do
-    print(i,v)
+for i = 1, 500 do
+    print(i)
 end
 ]]
