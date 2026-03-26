@@ -1,6 +1,7 @@
+--!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 19:32:27
+-- built   : 2026-03-26 19:36:14
 -- entry   : main.lua
 -- inlined : 5 module(s) + entry
 
