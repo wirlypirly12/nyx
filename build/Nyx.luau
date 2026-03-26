@@ -1,6 +1,6 @@
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 00:28:11
+-- built   : 2026-03-26 00:34:53
 -- entry   : main.lua
 -- inlined : 6 module(s) + entry
 
@@ -831,7 +831,7 @@ local OPNAMES = {
 	"LOAD_LOCAL", -- push locals[arg] onto stack
 	"STORE_LOCAL", -- pop stack into locals[arg]
 	"LOAD_GLOBAL", -- push globals[constants[arg]] onto stack
-	"LOAD_UPVALUE",
+	"LOAD_UPVALUE", -- push upvalue onto stack
 	"STORE_GLOBAL", -- pop stack into globals[constants[arg]]
 	"PUSH_NIL", -- push nil
 	"PUSH_TRUE", -- push true
@@ -1604,24 +1604,20 @@ local pow = a ^ b
 local unm = -a
 print(add, sub, mul, div, mod, idiv, pow, unm)
 
--- string concat and len
 local s = "hello" .. " " .. "world"
 local l = #s
 print(s, l)
 
--- booleans and logic
 local t = true
 local f = false
 print(t and f, t or f, not t)
 
--- comparisons
+
 print(a == b, a ~= b, a < b, a <= b, a > b, a >= b)
 
--- nil
 local n = nil
 print(n)
 
--- if / elseif / else
 if a > 5 then
 	print("a > 5")
 elseif a == 5 then
@@ -1630,55 +1626,47 @@ else
 	print("a < 5")
 end
 
--- while
 local i = 0
 while i < 3 do
 	print("while", i)
 	i = i + 1
 end
 
--- repeat until
 local j = 0
 repeat
 	print("repeat", j)
 	j = j + 1
 until j >= 3
 
--- numeric for positive step
 for x = 1, 3 do
 	print("for+", x)
 end
 
--- numeric for negative step
 for x = 3, 1, -1 do
 	print("for-", x)
 end
 
--- tables
 local tbl = {
 	["key"] = "value",
-	name = "carter",
+	name = "waaaa",
 	[1] = "indexed",
 }
 print(tbl["key"], tbl.name, tbl[1])
 
--- table set/get index
 tbl["dynamic"] = "yes"
 print(tbl["dynamic"])
 
--- generic for
 local counts = { a = 1, b = 2, c = 3 }
 for k, v in pairs(counts) do
 	print("pairs", k, v)
 end
 
--- functions
+
 local function add2(x, y)
 	return x + y
 end
 print(add2(10, 20))
 
--- closures / local function
 local function outer(x)
 	local function inner(y)
 		return x + y
@@ -1687,20 +1675,17 @@ local function outer(x)
 end
 print(outer(10))
 
--- do block scoping
 do
 	local scoped = "inside"
 	print(scoped)
 end
 
--- multiple return values
 local function multi()
 	return 1, 2, 3
 end
 local r1, r2, r3 = multi()
 print(r1, r2, r3)
 
--- global function
 function myGlobal(x)
 	return x * 2
 end
@@ -1989,11 +1974,9 @@ function vm:execute(chunk, args, upvalues)
 			local idx = frame.chunk.code[frame.ip]
 			local sub_chunk = frame.chunk.constants[idx + 1]
 			local f_upvalues = {}
-			-- capture by name using the chunk's constants as a guide
 			for name, reg in pairs(frame.chunk.locals) do
 				f_upvalues[name] = frame.locals[reg]
 			end
-			-- also inherit any upvalues from the current frame
 			if frame.upvalues then
 				for k, v in pairs(frame.upvalues) do
 					if f_upvalues[k] == nil then
@@ -2031,7 +2014,7 @@ function vm:execute(chunk, args, upvalues)
 		elseif op == OPCODES.CALL_MULTI then
 			frame.ip += 1
 			local arg_count = frame.chunk.code[frame.ip]
-			local expected = frame.chunk.code[frame.ip + 1] -- add expected count to opcode
+			local expected = frame.chunk.code[frame.ip + 1]
 			frame.ip += 1
 			local f_args = {}
 			for i = arg_count, 1, -1 do
@@ -2041,7 +2024,7 @@ function vm:execute(chunk, args, upvalues)
 			if type(func) == "function" then
 				local result = table.pack(func(table.unpack(f_args)))
 				for i = 1, expected do
-					self:push(frame, result[i]) -- result[i] is nil if i > result.n, which is fine
+					self:push(frame, result[i]) -- result[i] is nil if i > result.n
 				end
 			elseif type(func) == "table" and func.__type == "function" then
 				local result = self:execute(func.chunk, f_args, func.upvalues) or {}
@@ -2092,8 +2075,8 @@ local ast = parserObject:run()
 local compObject = compiler.new()
 
 compObject:run(ast)
-compObject:dump()
 local vmObj = vm.new(compObject.chunk)
+
 vmObj:load_stdlib()
 vmObj:run()
 
