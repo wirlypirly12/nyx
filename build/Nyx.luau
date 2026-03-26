@@ -1,6 +1,6 @@
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 19:21:32
+-- built   : 2026-03-26 19:32:27
 -- entry   : main.lua
 -- inlined : 5 module(s) + entry
 
@@ -2060,8 +2060,7 @@ function vm:load_stdlib()
 	self.globals["setmetatable"] = setmetatable
 	self.globals["getmetatable"] = getmetatable
 	self.globals["next"] = next
-	self.globals["load"] = load
-	self.globals["loadstring"] = loadstring or load
+	self.globals["loadstring"] = loadstring
 	self.globals["collectgarbage"] = collectgarbage
 	self.globals["warn"] = warn or print
 
@@ -2120,7 +2119,6 @@ function vm:load_stdlib()
 		reverse = string.reverse,
 		split = string.split or function(s, sep)
 			local result = {}
-			local pattern = "([^" .. sep .. "]*)" .. sep .. "?"
 			for part in s:gmatch("[^" .. sep .. "]+") do
 				table.insert(result, part)
 			end
@@ -2218,46 +2216,6 @@ function vm:load_roblox_env()
 
 	self.globals["game"] = game
 	self.globals["require"] = require
-
-	self.globals["cloneref"] = cloneref
-	self.globals["sethiddenproperty"] = sethiddenproperty
-	self.globals["set_hidden_property"] = set_hidden_property
-	self.globals["set_hidden_prop"] = set_hidden_prop
-	self.globals["gethiddenproperty"] = gethiddenproperty
-	self.globals["get_hidden_property"] = get_hidden_property
-	self.globals["get_hidden_prop"] = get_hidden_prop
-	self.globals["queue_on_teleport"] = queue_on_teleport
-	self.globals["syn"] = syn
-	self.globals["fluxus"] = fluxus
-	self.globals["request"] = request
-	self.globals["http_request"] = http_request
-	self.globals["http"] = http
-	self.globals["setclipboard"] = setclipboard
-	self.globals["toclipboard"] = toclipboard
-	self.globals["set_clipboard"] = set_clipboard
-	self.globals["Clipboard"] = Clipboard
-	self.globals["firetouchinterest"] = firetouchinterest
-	self.globals["writefile"] = writefile
-	self.globals["readfile"] = readfile
-	self.globals["isfile"] = isfile
-	self.globals["makefolder"] = makefolder
-	self.globals["isfolder"] = isfolder
-	self.globals["getcustomasset"] = getcustomasset
-	self.globals["getsynasset"] = getsynasset
-	self.globals["hookfunction"] = hookfunction
-	self.globals["hookmetamethod"] = hookmetamethod
-	self.globals["getnamecallmethod"] = getnamecallmethod
-	self.globals["get_namecall_method"] = get_namecall_method
-	self.globals["checkcaller"] = checkcaller
-	self.globals["newcclosure"] = newcclosure
-	self.globals["getgc"] = getgc
-	self.globals["get_gc_objects"] = get_gc_objects
-	self.globals["setthreadidentity"] = setthreadidentity
-	self.globals["syn_context_set"] = syn_context_set
-	self.globals["setthreadcontext"] = setthreadcontext
-	self.globals["replicatesignal"] = replicatesignal
-	self.globals["getconnections"] = getconnections
-	self.globals["get_signal_cons"] = get_signal_cons
 
 	self.globals["string"].split = string.split or self.globals["string"].split
 end
