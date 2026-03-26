@@ -1,6 +1,6 @@
 -- linker source map
 -- bundle  : Nyx.luau
--- built   : 2026-03-25 18:11:35
+-- built   : 2026-03-25 18:33:34
 --
 -- error on line N?  find the range below that contains N
 --
@@ -8,6 +8,6 @@
 26          332         src/lexer.lua
 336         828         src/parser.lua
 832         898         src/opcodes.lua
-902         1476        src/compiler.lua
-1480        1485        tests/compilerTest.lua
-1488        1503        main.lua
+902         1528        src/compiler.lua
+1532        1543        tests/compilerTest.lua
+1546        1561        main.lua

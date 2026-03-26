@@ -1,6 +1,6 @@
 main.lua 13418947895
-src/compiler.lua 13418950231
-src/lexer.lua 13418941237
+src/compiler.lua 13418951281
+src/lexer.lua 13418950619
 src/opcodes.lua 13418947926
-src/parser.lua 13418947844
-tests/compilerTest.lua 13418950293
+src/parser.lua 13418951283
+tests/compilerTest.lua 13418951612
