@@ -13,17 +13,15 @@ function vm.new(chunk)
 		chunk = chunk,
 		globals = {},
 	}, vm)
-
 	return self
 end
 
--- standard library
 function vm:load_stdlib()
-	-- god have mercy on my soul!!!
 	self.globals["print"] = print
 	self.globals["tostring"] = tostring
 	self.globals["tonumber"] = tonumber
 	self.globals["type"] = type
+	self.globals["typeof"] = typeof or type
 	self.globals["error"] = error
 	self.globals["assert"] = assert
 	self.globals["ipairs"] = ipairs
@@ -35,8 +33,13 @@ function vm:load_stdlib()
 	self.globals["rawget"] = rawget
 	self.globals["rawset"] = rawset
 	self.globals["rawequal"] = rawequal
+	self.globals["rawlen"] = rawlen
 	self.globals["setmetatable"] = setmetatable
 	self.globals["getmetatable"] = getmetatable
+	self.globals["next"] = next
+	self.globals["loadstring"] = loadstring or load
+	self.globals["collectgarbage"] = collectgarbage
+	self.globals["warn"] = warn or print
 
 	self.globals["math"] = {
 		floor = math.floor,
@@ -52,11 +55,29 @@ function vm:load_stdlib()
 		sin = math.sin,
 		cos = math.cos,
 		tan = math.tan,
-		pow = math.pow,
+		asin = math.asin,
+		acos = math.acos,
+		atan = math.atan,
+		atan2 = math.atan2,
 		log = math.log,
 		exp = math.exp,
 		fmod = math.fmod,
 		modf = math.modf,
+		pow = math.pow,
+		rad = math.rad,
+		deg = math.deg,
+
+		round = math.round or function(n)
+			return math.floor(n + 0.5)
+		end,
+		clamp = math.clamp or function(n, lo, hi)
+			return math.max(lo, math.min(hi, n))
+		end,
+		sign = math.sign or function(n)
+			return n > 0 and 1 or n < 0 and -1 or 0
+		end,
+		noise = math.noise,
+		map = math.map,
 	}
 
 	self.globals["string"] = {
@@ -73,6 +94,13 @@ function vm:load_stdlib()
 		gmatch = string.gmatch,
 		gsub = string.gsub,
 		reverse = string.reverse,
+		split = string.split or function(s, sep)
+			local result = {}
+			for part in s:gmatch("[^" .. sep .. "]+") do
+				table.insert(result, part)
+			end
+			return result
+		end,
 	}
 
 	self.globals["table"] = {
@@ -82,102 +110,78 @@ function vm:load_stdlib()
 		sort = table.sort,
 		unpack = table.unpack or unpack,
 		move = table.move,
+		pack = table.pack or function(...)
+			return { n = select("#", ...), ... }
+		end,
+		find = table.find or function(t, val, init)
+			for i = init or 1, #t do
+				if t[i] == val then
+					return i
+				end
+			end
+			return nil
+		end,
+		freeze = table.freeze or function(t)
+			return t
+		end,
+		clear = table.clear or function(t)
+			for k in next, t do
+				rawset(t, k, nil)
+			end
+		end,
+		create = table.create or function(n, val)
+			local t = {}
+			for i = 1, n do
+				t[i] = val
+			end
+			return t
+		end,
+	}
+
+	self.globals["os"] = {
+		time = os.time,
+		clock = os.clock,
+		date = os.date,
+		difftime = os.difftime,
 	}
 end
--- roblox env
+
 function vm:load_roblox_env()
 	self.globals["game"] = game
 	self.globals["workspace"] = workspace
 	self.globals["script"] = script
+	self.globals["_G"] = self.globals
 
-	self.globals["Instance"] = {
-		new = Instance.new,
-		fromExisting = Instance.fromExisting,
-	}
+	local vm_globals = self.globals
+	self.globals["getgenv"] = function()
+		return vm_globals
+	end
 
-	self.globals["Vector3"] = {
-		new = Vector3.new,
-		zero = Vector3.zero,
-		one = Vector3.one,
-		xAxis = Vector3.xAxis,
-		yAxis = Vector3.yAxis,
-		zAxis = Vector3.zAxis,
-	}
-
-	self.globals["Vector2"] = {
-		new = Vector2.new,
-		zero = Vector2.zero,
-		one = Vector2.one,
-	}
-
-	self.globals["CFrame"] = {
-		new = CFrame.new,
-		fromEulerAnglesXYZ = CFrame.fromEulerAnglesXYZ,
-		fromEulerAnglesYXZ = CFrame.fromEulerAnglesYXZ,
-		Angles = CFrame.Angles,
-		lookAt = CFrame.lookAt,
-		identity = CFrame.identity,
-	}
-
-	self.globals["Color3"] = {
-		new = Color3.new,
-		fromRGB = Color3.fromRGB,
-		fromHSV = Color3.fromHSV,
-		fromHex = Color3.fromHex,
-	}
-
-	self.globals["UDim"] = {
-		new = UDim.new,
-	}
-
-	self.globals["UDim2"] = {
-		new = UDim2.new,
-		fromScale = UDim2.fromScale,
-		fromOffset = UDim2.fromOffset,
-	}
-
-	self.globals["Rect"] = {
-		new = Rect.new,
-	}
-
-	self.globals["Ray"] = {
-		new = Ray.new,
-	}
-
-	self.globals["TweenInfo"] = {
-		new = TweenInfo.new,
-	}
-
-	self.globals["NumberSequence"] = {
-		new = NumberSequence.new,
-	}
-
-	self.globals["NumberSequenceKeypoint"] = {
-		new = NumberSequenceKeypoint.new,
-	}
-
-	self.globals["ColorSequence"] = {
-		new = ColorSequence.new,
-	}
-
-	self.globals["ColorSequenceKeypoint"] = {
-		new = ColorSequenceKeypoint.new,
-	}
-
+	self.globals["Instance"] = Instance
+	self.globals["Vector3"] = Vector3
+	self.globals["Vector2"] = Vector2
+	self.globals["CFrame"] = CFrame
+	self.globals["Color3"] = Color3
+	self.globals["UDim"] = UDim
+	self.globals["UDim2"] = UDim2
+	self.globals["Rect"] = Rect
+	self.globals["Ray"] = Ray
+	self.globals["TweenInfo"] = TweenInfo
+	self.globals["NumberSequence"] = NumberSequence
+	self.globals["NumberSequenceKeypoint"] = NumberSequenceKeypoint
+	self.globals["ColorSequence"] = ColorSequence
+	self.globals["ColorSequenceKeypoint"] = ColorSequenceKeypoint
+	self.globals["BrickColor"] = BrickColor
+	self.globals["Axes"] = Axes
+	self.globals["Faces"] = Faces
+	self.globals["Region3"] = Region3
 	self.globals["Enum"] = Enum
+	self.globals["Random"] = Random
 
-	self.globals["task"] = {
-		wait = task.wait,
-		spawn = task.spawn,
-		delay = task.delay,
-		defer = task.defer,
-		cancel = task.cancel,
-	}
-
+	self.globals["task"] = task
 	self.globals["wait"] = task.wait
 	self.globals["spawn"] = task.spawn
 	self.globals["delay"] = task.delay
-
 	self.globals["tick"] = tick
 	self.globals["time"] = time
 	self.globals["os"] = {
@@ -186,18 +190,62 @@ function vm:load_roblox_env()
 		date = os.date,
 		difftime = os.difftime,
 	}
+
+	self.globals["game"] = game
 	self.globals["require"] = require
+
+	self.globals["cloneref"] = cloneref
+	self.globals["sethiddenproperty"] = sethiddenproperty
+	self.globals["set_hidden_property"] = set_hidden_property
+	self.globals["set_hidden_prop"] = set_hidden_prop
+	self.globals["gethiddenproperty"] = gethiddenproperty
+	self.globals["get_hidden_property"] = get_hidden_property
+	self.globals["get_hidden_prop"] = get_hidden_prop
+	self.globals["queue_on_teleport"] = queue_on_teleport
+	self.globals["syn"] = syn
+	self.globals["fluxus"] = fluxus
+	self.globals["request"] = request
+	self.globals["http_request"] = http_request
+	self.globals["http"] = http
+	self.globals["setclipboard"] = setclipboard
+	self.globals["toclipboard"] = toclipboard
+	self.globals["set_clipboard"] = set_clipboard
+	self.globals["Clipboard"] = Clipboard
+	self.globals["firetouchinterest"] = firetouchinterest
+	self.globals["writefile"] = writefile
+	self.globals["readfile"] = readfile
+	self.globals["isfile"] = isfile
+	self.globals["makefolder"] = makefolder
+	self.globals["isfolder"] = isfolder
+	self.globals["getcustomasset"] = getcustomasset
+	self.globals["getsynasset"] = getsynasset
+	self.globals["hookfunction"] = hookfunction
+	self.globals["hookmetamethod"] = hookmetamethod
+	self.globals["getnamecallmethod"] = getnamecallmethod
+	self.globals["get_namecall_method"] = get_namecall_method
+	self.globals["checkcaller"] = checkcaller
+	self.globals["newcclosure"] = newcclosure
+	self.globals["getgc"] = getgc
+	self.globals["get_gc_objects"] = get_gc_objects
+	self.globals["setthreadidentity"] = setthreadidentity
+	self.globals["syn_context_set"] = syn_context_set
+	self.globals["setthreadcontext"] = setthreadcontext
+	self.globals["replicatesignal"] = replicatesignal
+	self.globals["getconnections"] = getconnections
+	self.globals["get_signal_cons"] = get_signal_cons
+
+	self.globals["string"].split = string.split or self.globals["string"].split
 end
 
--- create a new call frame
-function vm:make_frame(chunk, args, upvalues)
+function vm:make_frame(chunk, args, upvalue_cells)
 	local frame = {
 		chunk = chunk,
 		ip = 1,
 		locals = {},
 		stack = {},
 		top = 0,
-		upvalues = upvalues or {},
+
+		upvalue_cells = upvalue_cells or {},
 		varargs = {},
 	}
 	if args then
@@ -229,86 +277,296 @@ function vm:peek_stack(frame)
 	return frame.stack[frame.top]
 end
 
-function vm:execute(chunk, args, upvalues)
-	local frame = self:make_frame(chunk, args, upvalues)
+function vm:_do_call(func, f_args)
+	if type(func) == "function" then
+		return table.pack(func(table.unpack(f_args)))
+	elseif type(func) == "table" and func.__type == "function" then
+		local res = self:execute(func.chunk, f_args, func.upvalue_cells)
+		return res or {}
+	elseif type(func) == "table" or type(func) == "userdata" then
+		local mt = getmetatable(func)
+		if mt then
+			local mm = rawget(mt, "__call")
+			if mm then
+				local args2 = { func, table.unpack(f_args) }
+				return self:_do_call(mm, args2)
+			end
+		end
+		error(`attempt to call a {type(func)} value`)
+	else
+		error(`attempt to call a {type(func)} value`)
+	end
+end
+
+local STRING_METATABLE = { __index = string }
+
+function vm:_get_metafield(obj, name)
+	local mt
+	if type(obj) == "string" then
+		mt = STRING_METATABLE
+	else
+		mt = getmetatable(obj)
+	end
+	if mt == nil then
+		return nil
+	end
+	return rawget(mt, name)
+end
+
+function vm:_get_index(tbl, key)
+	local raw
+	if type(tbl) == "string" then
+		return string[key]
+	end
+	raw = rawget(tbl, key)
+	if raw ~= nil then
+		return raw
+	end
+
+	local mt = getmetatable(tbl)
+	if mt == nil then
+		return nil
+	end
+	local index = rawget(mt, "__index")
+	if index == nil then
+		return nil
+	end
+	if type(index) == "function" then
+		local res = table.pack(index(tbl, key))
+		return res[1]
+	elseif type(index) == "table" or type(index) == "userdata" then
+		return self:_get_index(index, key)
+	end
+	return nil
+end
+
+function vm:_set_index(tbl, key, val)
+	local mt = getmetatable(tbl)
+	if mt and rawget(tbl, key) == nil then
+		local ni = rawget(mt, "__newindex")
+		if ni then
+			if type(ni) == "function" then
+				ni(tbl, key, val)
+				return
+			elseif type(ni) == "table" then
+				self:_set_index(ni, key, val)
+				return
+			end
+		end
+	end
+	rawset(tbl, key, val)
+end
+
+function vm:_arith(a, b, mm_name, native)
+	local ok, result = pcall(native, a, b)
+	if ok then
+		return result
+	end
+
+	local mm = self:_get_metafield(a, mm_name) or self:_get_metafield(b, mm_name)
+	if mm then
+		return (self:_do_call(mm, { a, b }))[1]
+	end
+	error(`attempt to perform arithmetic`)
+end
+
+function vm:_unary(a, mm_name, native)
+	local ok, result = pcall(native, a)
+	if ok then
+		return result
+	end
+	local mm = self:_get_metafield(a, mm_name)
+	if mm then
+		return (self:_do_call(mm, { a, a }))[1]
+	end
+	error(`attempt to perform arithmetic on a {type(a)} value`)
+end
+
+function vm:_concat(a, b)
+	if (type(a) == "string" or type(a) == "number") and (type(b) == "string" or type(b) == "number") then
+		return tostring(a) .. tostring(b)
+	end
+	local mm = self:_get_metafield(a, "__concat") or self:_get_metafield(b, "__concat")
+	if mm then
+		return (self:_do_call(mm, { a, b }))[1]
+	end
+	error(`attempt to concatenate a {type(a)} value`)
+end
+
+function vm:_len(a)
+	if type(a) == "string" or type(a) == "table" then
+		local mm = self:_get_metafield(a, "__len")
+		if mm then
+			return (self:_do_call(mm, { a }))[1]
+		end
+		return #a
+	end
+	error(`attempt to get length of a {type(a)} value`)
+end
+
+function vm:_eq(a, b)
+	if a == b then
+		return true
+	end
+
+	local mm_a = self:_get_metafield(a, "__eq")
+	local mm_b = self:_get_metafield(b, "__eq")
+	if mm_a and mm_a == mm_b then
+		return (self:_do_call(mm_a, { a, b }))[1] and true or false
+	end
+	return false
+end
+
+function vm:_lt(a, b)
+	if type(a) == "number" and type(b) == "number" then
+		return a < b
+	end
+	if type(a) == "string" and type(b) == "string" then
+		return a < b
+	end
+	local mm = self:_get_metafield(a, "__lt") or self:_get_metafield(b, "__lt")
+	if mm then
+		return (self:_do_call(mm, { a, b }))[1] and true or false
+	end
+	error(`attempt to compare {type(a)} with {type(b)}`)
+end
+
+function vm:_le(a, b)
+	if type(a) == "number" and type(b) == "number" then
+		return a <= b
+	end
+	if type(a) == "string" and type(b) == "string" then
+		return a <= b
+	end
+	local mm = self:_get_metafield(a, "__le") or self:_get_metafield(b, "__le")
+	if mm then
+		return (self:_do_call(mm, { a, b }))[1] and true or false
+	end
+
+	return not self:_lt(b, a)
+end
+
+function vm:execute(chunk, args, upvalue_cells)
+	local frame = self:make_frame(chunk, args, upvalue_cells)
 
 	while frame.ip <= #frame.chunk.code do
 		local op = frame.chunk.code[frame.ip]
 
-		-- load
 		if op == OPCODES.LOAD_CONST then
 			frame.ip += 1
-			local idx = frame.chunk.code[frame.ip]
-			self:push(frame, frame.chunk.constants[idx + 1])
+			self:push(frame, frame.chunk.constants[frame.chunk.code[frame.ip] + 1])
 		elseif op == OPCODES.LOAD_LOCAL then
 			frame.ip += 1
-			local reg = frame.chunk.code[frame.ip]
-			self:push(frame, frame.locals[reg])
-		elseif op == OPCODES.LOAD_GLOBAL then
-			frame.ip += 1
-			local idx = frame.chunk.code[frame.ip]
-			local name = frame.chunk.constants[idx + 1]
-			self:push(frame, self.globals[name])
-		elseif op == OPCODES.LOAD_UPVALUE then
-			frame.ip += 1
-			local idx = frame.chunk.code[frame.ip]
-			local name = frame.chunk.constants[idx + 1]
-			self:push(frame, frame.upvalues and frame.upvalues[name] or nil)
-		-- store
+			self:push(frame, frame.locals[frame.chunk.code[frame.ip]])
 		elseif op == OPCODES.STORE_LOCAL then
 			frame.ip += 1
 			local reg = frame.chunk.code[frame.ip]
-			frame.locals[reg] = self:pop(frame)
+			local val = self:pop(frame)
+			frame.locals[reg] = val
+
+			if frame.local_cells and frame.local_cells[reg] then
+				frame.local_cells[reg].value = val
+			end
+		elseif op == OPCODES.LOAD_GLOBAL then
+			frame.ip += 1
+			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
+			self:push(frame, self.globals[name])
 		elseif op == OPCODES.STORE_GLOBAL then
 			frame.ip += 1
-			local idx = frame.chunk.code[frame.ip]
-			local name = frame.chunk.constants[idx + 1]
+			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
 			self.globals[name] = self:pop(frame)
-
-		-- push
+		elseif op == OPCODES.LOAD_UPVALUE then
+			frame.ip += 1
+			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
+			local cell = frame.upvalue_cells[name]
+			self:push(frame, cell and cell.value or nil)
+		elseif op == OPCODES.STORE_UPVALUE then
+			frame.ip += 1
+			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
+			local cell = frame.upvalue_cells[name]
+			if cell then
+				cell.value = self:pop(frame)
+			else
+				frame.upvalue_cells[name] = { value = self:pop(frame) }
+			end
 		elseif op == OPCODES.PUSH_NIL then
 			self:push(frame, nil)
 		elseif op == OPCODES.PUSH_TRUE then
 			self:push(frame, true)
 		elseif op == OPCODES.PUSH_FALSE then
 			self:push(frame, false)
-
-		-- pop
 		elseif op == OPCODES.POP then
 			self:pop(frame)
-
-		-- arithmetic
 		elseif op == OPCODES.ADD then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a + b)
+			self:push(
+				frame,
+				self:_arith(a, b, "__add", function(x, y)
+					return x + y
+				end)
+			)
 		elseif op == OPCODES.SUB then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a - b)
+			self:push(
+				frame,
+				self:_arith(a, b, "__sub", function(x, y)
+					return x - y
+				end)
+			)
 		elseif op == OPCODES.MUL then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a * b)
+			self:push(
+				frame,
+				self:_arith(a, b, "__mul", function(x, y)
+					return x * y
+				end)
+			)
 		elseif op == OPCODES.DIV then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a / b)
+			self:push(
+				frame,
+				self:_arith(a, b, "__div", function(x, y)
+					return x / y
+				end)
+			)
 		elseif op == OPCODES.MOD then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a % b)
+			self:push(
+				frame,
+				self:_arith(a, b, "__mod", function(x, y)
+					return x % y
+				end)
+			)
 		elseif op == OPCODES.IDIV then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, math.floor(a / b))
-		elseif op == OPCODES.UNM then
-			self:push(frame, -self:pop(frame))
+			self:push(
+				frame,
+				self:_arith(a, b, "__idiv", function(x, y)
+					return math.floor(x / y)
+				end)
+			)
 		elseif op == OPCODES.POW then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a ^ b)
-		-- string
+			self:push(
+				frame,
+				self:_arith(a, b, "__pow", function(x, y)
+					return x ^ y
+				end)
+			)
+		elseif op == OPCODES.UNM then
+			local a = self:pop(frame)
+			self:push(
+				frame,
+				self:_unary(a, "__unm", function(x)
+					return -x
+				end)
+			)
 		elseif op == OPCODES.CONCAT then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a .. b)
+			self:push(frame, self:_concat(a, b))
 		elseif op == OPCODES.LEN then
-			self:push(frame, #self:pop(frame))
-
-		-- logic
+			local a = self:pop(frame)
+			self:push(frame, self:_len(a))
 		elseif op == OPCODES.AND then
 			local b, a = self:pop(frame), self:pop(frame)
 			self:push(frame, a and b)
@@ -317,142 +575,84 @@ function vm:execute(chunk, args, upvalues)
 			self:push(frame, a or b)
 		elseif op == OPCODES.NOT then
 			self:push(frame, not self:pop(frame))
-
-		-- cmp
 		elseif op == OPCODES.EQ then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a == b)
+			self:push(frame, self:_eq(a, b))
 		elseif op == OPCODES.NEQ then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a ~= b)
+			self:push(frame, not self:_eq(a, b))
 		elseif op == OPCODES.LT then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a < b)
+			self:push(frame, self:_lt(a, b))
 		elseif op == OPCODES.LTE then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a <= b)
+			self:push(frame, self:_le(a, b))
 		elseif op == OPCODES.GT then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a > b)
+			self:push(frame, self:_lt(b, a))
 		elseif op == OPCODES.GTE then
 			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a >= b)
-		elseif op == OPCODES.VARARG then
-			for _, v in frame.varargs do
-				self:push(frame, v)
-			end
-			-- push the count so CALL knows how many were pushed
-			self:push(frame, { __vararg_count = #frame.varargs })
-		elseif op == OPCODES.VARARG_FIRST then
-			self:push(frame, frame.varargs[1])
-		-- control flow
+			self:push(frame, self:_le(b, a))
 		elseif op == OPCODES.JUMP then
 			frame.ip += 1
-			local target = frame.chunk.code[frame.ip]
-			frame.ip = target
+			frame.ip = frame.chunk.code[frame.ip]
 			continue
 		elseif op == OPCODES.JUMP_IF_FALSE then
 			frame.ip += 1
 			local target = frame.chunk.code[frame.ip]
-			local val = self:pop(frame)
-			if not val then
+			if not self:pop(frame) then
 				frame.ip = target
 				continue
 			end
-		-- tables
+		elseif op == OPCODES.JUMP_IF_FALSE_KEEP then
+			frame.ip += 1
+			local target = frame.chunk.code[frame.ip]
+			if not self:peek_stack(frame) then
+				frame.ip = target
+				continue
+			end
+		elseif op == OPCODES.JUMP_IF_TRUE_KEEP then
+			frame.ip += 1
+			local target = frame.chunk.code[frame.ip]
+			if self:peek_stack(frame) then
+				frame.ip = target
+				continue
+			end
 		elseif op == OPCODES.NEW_TABLE then
 			self:push(frame, {})
 		elseif op == OPCODES.SET_FIELD then
 			frame.ip += 1
-			local idx = frame.chunk.code[frame.ip]
-			local key = frame.chunk.constants[idx + 1]
+			local key = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
 			local val = self:pop(frame)
-			local tbl = self:peek_stack(frame) -- keep the table on the stack
-			tbl[key] = val
+			local tbl = self:peek_stack(frame)
+			self:_set_index(tbl, key, val)
 		elseif op == OPCODES.GET_FIELD then
 			frame.ip += 1
-			local idx = frame.chunk.code[frame.ip]
-			local key = frame.chunk.constants[idx + 1]
+			local key = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
 			local tbl = self:pop(frame)
-			self:push(frame, tbl[key])
+			if tbl == nil then
+				error(`attempt to index a nil value (field '{key}')`)
+			end
+			self:push(frame, self:_get_index(tbl, key))
 		elseif op == OPCODES.SET_INDEX then
 			local val = self:pop(frame)
 			local key = self:pop(frame)
-			local tbl = self:peek_stack(frame) -- keep the table on the stack
-			tbl[key] = val
+			local tbl = self:peek_stack(frame)
+			self:_set_index(tbl, key, val)
 		elseif op == OPCODES.GET_INDEX then
 			local key = self:pop(frame)
 			local tbl = self:pop(frame)
-			self:push(frame, tbl[key])
-
-		-- closures
-		elseif op == OPCODES.CLOSURE then
-			frame.ip += 1
-			local idx = frame.chunk.code[frame.ip]
-			local sub_chunk = frame.chunk.constants[idx + 1]
-			local f_upvalues = {}
-			-- get current locals by name
-			for name, reg in pairs(frame.chunk.locals) do
-				f_upvalues[name] = frame.locals[reg]
+			if tbl == nil then
+				error(`attempt to index a nil value`)
 			end
-			if frame.upvalues then
-				for k, v in pairs(frame.upvalues) do
-					if f_upvalues[k] == nil then
-						f_upvalues[k] = v
-					end
-				end
+			self:push(frame, self:_get_index(tbl, key))
+		elseif op == OPCODES.VARARG then
+			for _, v in frame.varargs do
+				self:push(frame, v)
 			end
-			self:push(frame, {
-				__type = "function",
-				chunk = sub_chunk,
-				upvalues = f_upvalues,
-			})
-		elseif op == OPCODES.CALL then
-			frame.ip += 1
-			local arg_count = frame.chunk.code[frame.ip]
-			local f_args = {}
-
-			-- check if top of stack is a vararg
-			local top = self:peek_stack(frame)
-			if type(top) == "table" and top.__vararg_count then
-				self:pop(frame)
-				local vararg_count = top.__vararg_count
-				-- pop varargs
-				local varargs = {}
-				for i = vararg_count, 1, -1 do
-					varargs[i] = self:pop(frame)
-				end
-				-- pop remaining normal args
-				local normal = {}
-				for i = arg_count - 1, 1, -1 do
-					normal[i] = self:pop(frame)
-				end
-				-- combine
-				for _, v in normal do
-					table.insert(f_args, v)
-				end
-				for _, v in varargs do
-					table.insert(f_args, v)
-				end
-			else
-				for i = arg_count, 1, -1 do
-					f_args[i] = self:pop(frame)
-				end
-			end
-			local func = self:pop(frame)
-			if type(func) == "function" then
-				local result = table.pack(func(table.unpack(f_args)))
-				self:push(frame, result[1])
-			elseif type(func) == "table" and func.__type == "function" then
-				local result = self:execute(func.chunk, f_args, func.upvalues, f_args) -- pass f_args as varargs
-				if result then
-					self:push(frame, result[1])
-				else
-					self:push(frame, nil)
-				end
-			else
-				error(`attempt to call a {type(func)} value`)
-			end
+			self:push(frame, { __vararg_count = #frame.varargs })
+		elseif op == OPCODES.VARARG_FIRST then
+			self:push(frame, frame.varargs[1])
 		elseif op == OPCODES.SET_VARARG_TABLE then
 			local sentinel = self:pop(frame)
 			local count = sentinel.__vararg_count
@@ -460,32 +660,67 @@ function vm:execute(chunk, args, upvalues)
 			for i = count, 1, -1 do
 				values[i] = self:pop(frame)
 			end
+			local offset = self:pop(frame)
 			local tbl = self:peek_stack(frame)
 			for i, v in values do
-				tbl[i] = v
+				tbl[offset + i - 1] = v
 			end
+		elseif op == OPCODES.CLOSURE then
+			frame.ip += 1
+			local sub_chunk = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
+
+			local new_cells = {}
+
+			for name, _ in sub_chunk.upvalue_names do
+				if frame.upvalue_cells[name] then
+					new_cells[name] = frame.upvalue_cells[name]
+				else
+					local reg = frame.chunk.locals[name]
+					if reg ~= nil then
+						if frame.local_cells and frame.local_cells[reg] then
+							new_cells[name] = frame.local_cells[reg]
+						else
+							local cell = { value = frame.locals[reg] }
+							if not frame.local_cells then
+								frame.local_cells = {}
+							end
+							frame.local_cells[reg] = cell
+							new_cells[name] = cell
+						end
+					else
+						new_cells[name] = { value = self.globals[name] }
+					end
+				end
+			end
+
+			self:push(frame, {
+				__type = "function",
+				chunk = sub_chunk,
+				upvalue_cells = new_cells,
+			})
+		elseif op == OPCODES.CALL then
+			frame.ip += 1
+			local arg_count = frame.chunk.code[frame.ip]
+			local f_args = self:_collect_args(frame, arg_count)
+			local func = self:pop(frame)
+			local results = self:_do_call(func, f_args)
+			self:push(frame, results[1])
+		elseif op == OPCODES.CALL_VOID then
+			frame.ip += 1
+			local arg_count = frame.chunk.code[frame.ip]
+			local f_args = self:_collect_args(frame, arg_count)
+			local func = self:pop(frame)
+			self:_do_call(func, f_args)
 		elseif op == OPCODES.CALL_MULTI then
 			frame.ip += 1
 			local arg_count = frame.chunk.code[frame.ip]
-			local expected = frame.chunk.code[frame.ip + 1]
 			frame.ip += 1
-			local f_args = {}
-			for i = arg_count, 1, -1 do
-				f_args[i] = self:pop(frame)
-			end
+			local expected = frame.chunk.code[frame.ip]
+			local f_args = self:_collect_args(frame, arg_count)
 			local func = self:pop(frame)
-			if type(func) == "function" then
-				local result = table.pack(func(table.unpack(f_args)))
-				for i = 1, expected do
-					self:push(frame, result[i]) -- result[i] is nil if i > result.n
-				end
-			elseif type(func) == "table" and func.__type == "function" then
-				local result = self:execute(func.chunk, f_args, func.upvalues) or {}
-				for i = 1, expected do
-					self:push(frame, result[i])
-				end
-			else
-				error(`attempt to call a {type(func)} value`)
+			local results = self:_do_call(func, f_args)
+			for i = 1, expected do
+				self:push(frame, results[i])
 			end
 		elseif op == OPCODES.RETURN then
 			frame.ip += 1
@@ -496,34 +731,65 @@ function vm:execute(chunk, args, upvalues)
 			end
 			return results
 		else
-			error(`unknown operation: {op} ({OPNAMES[op] or "?"}) at instruction: {frame.ip}`)
+			error(`unknown opcode: {op} ({OPNAMES[op] or "?"}) at ip={frame.ip}`)
 		end
 
 		frame.ip += 1
 	end
+
 	return nil
 end
+
+function vm:_collect_args(frame, arg_count)
+	local f_args = {}
+	local top = self:peek_stack(frame)
+
+	if type(top) == "table" and top.__vararg_count then
+		self:pop(frame)
+		local vararg_count = top.__vararg_count
+		local varargs = {}
+		for i = vararg_count, 1, -1 do
+			varargs[i] = self:pop(frame)
+		end
+		local normal_count = arg_count - 1
+		for i = normal_count, 1, -1 do
+			f_args[i] = self:pop(frame)
+		end
+		for _, v in varargs do
+			table.insert(f_args, v)
+		end
+	else
+		for i = arg_count, 1, -1 do
+			f_args[i] = self:pop(frame)
+		end
+	end
+
+	return f_args
+end
+
+local _orig_push = vm.push
+local _orig_pop = vm.pop
 
 function vm:run()
 	return self:execute(self.chunk)
 end
 
-local compiler = require("./compiler")
-local lexer = require("./lexer")
-local astBuilder = require("./parser")
+local compiler_mod = require("./compiler")
+local lexer_mod = require("./lexer")
+local parser_mod = require("./parser")
 
 function vm:runSource(source)
-	local tokens = lexer.new(source):run()
-	local ast = astBuilder.new(tokens):run()
-	local compiler = compiler.new()
-	compiler:run(ast)
+	local tokens = lexer_mod.new(source):run()
+	local ast = parser_mod.new(tokens):run()
+	local comp = compiler_mod.new()
+	comp:run(ast)
 
-	compiler:dump(true)
+	local instance = vm.new(comp.chunk)
+	instance:load_stdlib()
+	instance:load_roblox_env()
 
-	local vm = vm.new(compiler.chunk)
-	vm:load_stdlib()
-	vm:load_roblox_env()
-	vm:run()
+	instance.globals["_G"] = instance.globals
+	instance:run()
 end
 
 return vm
