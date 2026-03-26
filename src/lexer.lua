@@ -32,6 +32,8 @@ local KEYWORDS = {
 	["true"] = true,
 	["false"] = true,
 	["nil"] = true,
+	["break"] = true,
+	["continue"] = true,
 }
 
 function lexer.new(source)
@@ -55,27 +57,25 @@ function lexer:advance()
 	self.pos = self.pos + 1
 
 	if self.pos <= #self.source then
-		self.char = self.source:sub(self.pos, self.pos) -- get character at curr pos
-
-		if self.char == "\n" then -- newline, reset the col and inc the line.
+		self.char = self.source:sub(self.pos, self.pos)
+		if self.char == "\n" then
 			self.line = self.line + 1
 			self.column = 1
 		else
 			self.column = self.column + 1
 		end
 	else
-		self.char = nil -- ran out of source to read
+		self.char = nil
 	end
 end
 
 function lexer:peek(offset)
 	offset = offset or 1
 	local peek_at = self.pos + offset
-
-	if peek_at <= #self.source then -- ensure we are still in bounds of the source
+	if peek_at <= #self.source then
 		return self.source:sub(peek_at, peek_at)
 	end
-	return nil -- no more source to peek
+	return nil
 end
 
 function lexer:skip_whitespace()
@@ -84,11 +84,10 @@ function lexer:skip_whitespace()
 	end
 end
 
---
 function lexer:skip_comment()
 	if self.char == "-" and self:peek() == "-" then
 		self:advance()
-		self:advance() -- skip --
+		self:advance()
 
 		if self.char == "[" then
 			local level = 0
@@ -99,11 +98,11 @@ function lexer:skip_comment()
 			end
 
 			if self:peek(i) == "[" then
-				self:advance() -- skip [
-				for z = 1, level do
-					self:advance() -- skip =
+				self:advance()
+				for _ = 1, level do
+					self:advance()
 				end
-				self:advance() -- skip second  [
+				self:advance()
 
 				while self.char do
 					if self.char == "]" then
@@ -114,11 +113,11 @@ function lexer:skip_comment()
 							j = j + 1
 						end
 						if close_level == level and self:peek(j) == "]" then
-							self:advance() -- skip ]
-							for z = 1, level do -- skip =
+							self:advance()
+							for _ = 1, level do
 								self:advance()
 							end
-							self:advance() -- skip second ]
+							self:advance()
 							return
 						end
 					end
@@ -138,6 +137,52 @@ function lexer:skip_comment()
 	end
 end
 
+function lexer:long_string()
+	local level = 0
+	local i = 1
+	while self:peek(i) == "=" do
+		level = level + 1
+		i = i + 1
+	end
+	if self:peek(i) ~= "[" then
+		return false
+	end
+
+	self:advance()
+	for _ = 1, level do
+		self:advance()
+	end
+	self:advance()
+
+	if self.char == "\n" then
+		self:advance()
+	end
+
+	local result = {}
+	while self.char do
+		if self.char == "]" then
+			local close_level = 0
+			local j = 1
+			while self:peek(j) == "=" do
+				close_level = close_level + 1
+				j = j + 1
+			end
+			if close_level == level and self:peek(j) == "]" then
+				self:advance()
+				for _ = 1, level do
+					self:advance()
+				end
+				self:advance()
+				self:emit(TOKEN_TYPES.STRING, table.concat(result))
+				return true
+			end
+		end
+		table.insert(result, self.char)
+		self:advance()
+	end
+	error(`unended long string, expected ]{string.rep("=", level)}]`)
+end
+
 function lexer:string()
 	local escapes = {
 		n = "\n",
@@ -146,29 +191,47 @@ function lexer:string()
 		["\\"] = "\\",
 		['"'] = '"',
 		["'"] = "'",
+		["0"] = "\0",
+		a = "\a",
+		b = "\b",
+		f = "\f",
+		v = "\v",
 	}
 
-	local quote = self.char -- store opening quote so we know when to stop advancing the string
+	local quote = self.char
 	self:advance()
 	local result = {}
 	while self.char and self.char ~= quote do
-		if self.char == "\\" then -- allow escapes to be parsed
+		if self.char == "\\" then
 			self:advance()
 			local escaped = escapes[self.char]
 			if escaped then
 				table.insert(result, escaped)
+			elseif self.char and self.char:match("%d") then
+				local num_str = self.char
+				self:advance()
+				if self.char and self.char:match("%d") then
+					num_str ..= self.char
+					self:advance()
+					if self.char and self.char:match("%d") then
+						num_str ..= self.char
+						self:advance()
+					end
+				end
+				table.insert(result, string.char(tonumber(num_str)))
+				continue
 			else
-				error(`illegal escape: {self.char}`)
+				error(`illegal escape sequence: \\{self.char}`)
 			end
 		else
 			table.insert(result, self.char)
 		end
 		self:advance()
 	end
-	if not self.char then -- ensure string closed
-		error("illegal string! did you forget to close it?")
+	if not self.char then
+		error("unfinished string (missing closing quote)")
 	end
-	self:advance() -- skip closing quote
+	self:advance()
 	self:emit(TOKEN_TYPES.STRING, table.concat(result))
 end
 
@@ -179,6 +242,7 @@ function lexer:number()
 		table.insert(result, self.char)
 		self:advance()
 		table.insert(result, self.char)
+		self:advance()
 		while self.char and self.char:match("[%x_]") do
 			if self.char ~= "_" then
 				table.insert(result, self.char)
@@ -191,6 +255,14 @@ function lexer:number()
 				table.insert(result, self.char)
 			end
 			self:advance()
+		end
+		if self.char == "." and self:peek() and self:peek():match("%d") then
+			table.insert(result, ".")
+			self:advance()
+			while self.char and self.char:match("%d") do
+				table.insert(result, self.char)
+				self:advance()
+			end
 		end
 		if self.char == "e" or self.char == "E" then
 			table.insert(result, self.char)
@@ -245,6 +317,11 @@ function lexer:operator()
 		["//"] = true,
 		["<<"] = true,
 		[">>"] = true,
+
+		["+="] = true,
+		["-="] = true,
+		["*="] = true,
+		["/="] = true,
 	}
 
 	if two_char[two] then
@@ -274,7 +351,7 @@ function lexer:symbol()
 		self:emit(TOKEN_TYPES.SYMBOL, self.char)
 		self:advance()
 	else
-		error(`unexpected character: {self.char} at line {self.line} col: {self.column}`)
+		error(`unexpected character: '{self.char}' at line {self.line} col {self.column}`)
 	end
 end
 
@@ -298,7 +375,13 @@ function lexer:run()
 			self:skip_comment()
 		elseif self.char == '"' or self.char == "'" then
 			self:string()
+		elseif self.char == "[" and (self:peek() == "[" or self:peek() == "=") then
+			if not self:long_string() then
+				self:symbol()
+			end
 		elseif self.char:match("%d") then
+			self:number()
+		elseif self.char == "." and self:peek() and self:peek():match("%d") then
 			self:number()
 		elseif self.char:match("[%a_]") then
 			self:identifier()
