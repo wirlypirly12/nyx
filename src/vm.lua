@@ -37,7 +37,6 @@ function vm:load_stdlib()
 	self.globals["rawequal"] = rawequal
 	self.globals["setmetatable"] = setmetatable
 	self.globals["getmetatable"] = getmetatable
-	self.globals["game"] = game
 
 	self.globals["math"] = {
 		floor = math.floor,
@@ -85,6 +84,110 @@ function vm:load_stdlib()
 		move = table.move,
 	}
 end
+-- roblox env
+function vm:load_roblox_env()
+	self.globals["game"] = game
+	self.globals["workspace"] = workspace
+	self.globals["script"] = script
+
+	self.globals["Instance"] = {
+		new = Instance.new,
+		fromExisting = Instance.fromExisting,
+	}
+
+	self.globals["Vector3"] = {
+		new = Vector3.new,
+		zero = Vector3.zero,
+		one = Vector3.one,
+		xAxis = Vector3.xAxis,
+		yAxis = Vector3.yAxis,
+		zAxis = Vector3.zAxis,
+	}
+
+	self.globals["Vector2"] = {
+		new = Vector2.new,
+		zero = Vector2.zero,
+		one = Vector2.one,
+	}
+
+	self.globals["CFrame"] = {
+		new = CFrame.new,
+		fromEulerAnglesXYZ = CFrame.fromEulerAnglesXYZ,
+		fromEulerAnglesYXZ = CFrame.fromEulerAnglesYXZ,
+		Angles = CFrame.Angles,
+		lookAt = CFrame.lookAt,
+		identity = CFrame.identity,
+	}
+
+	self.globals["Color3"] = {
+		new = Color3.new,
+		fromRGB = Color3.fromRGB,
+		fromHSV = Color3.fromHSV,
+		fromHex = Color3.fromHex,
+	}
+
+	self.globals["UDim"] = {
+		new = UDim.new,
+	}
+
+	self.globals["UDim2"] = {
+		new = UDim2.new,
+		fromScale = UDim2.fromScale,
+		fromOffset = UDim2.fromOffset,
+	}
+
+	self.globals["Rect"] = {
+		new = Rect.new,
+	}
+
+	self.globals["Ray"] = {
+		new = Ray.new,
+	}
+
+	self.globals["TweenInfo"] = {
+		new = TweenInfo.new,
+	}
+
+	self.globals["NumberSequence"] = {
+		new = NumberSequence.new,
+	}
+
+	self.globals["NumberSequenceKeypoint"] = {
+		new = NumberSequenceKeypoint.new,
+	}
+
+	self.globals["ColorSequence"] = {
+		new = ColorSequence.new,
+	}
+
+	self.globals["ColorSequenceKeypoint"] = {
+		new = ColorSequenceKeypoint.new,
+	}
+
+	self.globals["Enum"] = Enum
+
+	self.globals["task"] = {
+		wait = task.wait,
+		spawn = task.spawn,
+		delay = task.delay,
+		defer = task.defer,
+		cancel = task.cancel,
+	}
+
+	self.globals["wait"] = task.wait
+	self.globals["spawn"] = task.spawn
+	self.globals["delay"] = task.delay
+
+	self.globals["tick"] = tick
+	self.globals["time"] = time
+	self.globals["os"] = {
+		time = os.time,
+		clock = os.clock,
+		date = os.date,
+		difftime = os.difftime,
+	}
+	self.globals["require"] = require
+end
 
 -- create a new call frame
 function vm:make_frame(chunk, args, upvalues)
@@ -95,14 +198,21 @@ function vm:make_frame(chunk, args, upvalues)
 		stack = {},
 		top = 0,
 		upvalues = upvalues or {},
+		varargs = {},
 	}
 	if args then
-		for i, v in ipairs(args) do
-			frame.locals[i - 1] = v
+		local num_params = chunk.num_params or 0
+		for i, v in args do
+			if i <= num_params then
+				frame.locals[i - 1] = v
+			else
+				table.insert(frame.varargs, v)
+			end
 		end
 	end
 	return frame
 end
+
 function vm:push(frame, value)
 	frame.top = (frame.top or 0) + 1
 	frame.stack[frame.top] = value
@@ -227,7 +337,14 @@ function vm:execute(chunk, args, upvalues)
 		elseif op == OPCODES.GTE then
 			local b, a = self:pop(frame), self:pop(frame)
 			self:push(frame, a >= b)
-
+		elseif op == OPCODES.VARARG then
+			for _, v in frame.varargs do
+				self:push(frame, v)
+			end
+			-- push the count so CALL knows how many were pushed
+			self:push(frame, { __vararg_count = #frame.varargs })
+		elseif op == OPCODES.VARARG_FIRST then
+			self:push(frame, frame.varargs[1])
 		-- control flow
 		elseif op == OPCODES.JUMP then
 			frame.ip += 1
@@ -242,7 +359,6 @@ function vm:execute(chunk, args, upvalues)
 				frame.ip = target
 				continue
 			end
-
 		-- tables
 		elseif op == OPCODES.NEW_TABLE then
 			self:push(frame, {})
@@ -275,6 +391,7 @@ function vm:execute(chunk, args, upvalues)
 			local idx = frame.chunk.code[frame.ip]
 			local sub_chunk = frame.chunk.constants[idx + 1]
 			local f_upvalues = {}
+			-- get current locals by name
 			for name, reg in pairs(frame.chunk.locals) do
 				f_upvalues[name] = frame.locals[reg]
 			end
@@ -294,16 +411,40 @@ function vm:execute(chunk, args, upvalues)
 			frame.ip += 1
 			local arg_count = frame.chunk.code[frame.ip]
 			local f_args = {}
-			for i = arg_count, 1, -1 do
-				f_args[i] = self:pop(frame)
+
+			-- check if top of stack is a vararg
+			local top = self:peek_stack(frame)
+			if type(top) == "table" and top.__vararg_count then
+				self:pop(frame)
+				local vararg_count = top.__vararg_count
+				-- pop varargs
+				local varargs = {}
+				for i = vararg_count, 1, -1 do
+					varargs[i] = self:pop(frame)
+				end
+				-- pop remaining normal args
+				local normal = {}
+				for i = arg_count - 1, 1, -1 do
+					normal[i] = self:pop(frame)
+				end
+				-- combine
+				for _, v in normal do
+					table.insert(f_args, v)
+				end
+				for _, v in varargs do
+					table.insert(f_args, v)
+				end
+			else
+				for i = arg_count, 1, -1 do
+					f_args[i] = self:pop(frame)
+				end
 			end
 			local func = self:pop(frame)
 			if type(func) == "function" then
 				local result = table.pack(func(table.unpack(f_args)))
-				-- only push first return value for normal calls
 				self:push(frame, result[1])
 			elseif type(func) == "table" and func.__type == "function" then
-				local result = self:execute(func.chunk, f_args, func.upvalues)
+				local result = self:execute(func.chunk, f_args, func.upvalues, f_args) -- pass f_args as varargs
 				if result then
 					self:push(frame, result[1])
 				else
@@ -311,6 +452,17 @@ function vm:execute(chunk, args, upvalues)
 				end
 			else
 				error(`attempt to call a {type(func)} value`)
+			end
+		elseif op == OPCODES.SET_VARARG_TABLE then
+			local sentinel = self:pop(frame)
+			local count = sentinel.__vararg_count
+			local values = {}
+			for i = count, 1, -1 do
+				values[i] = self:pop(frame)
+			end
+			local tbl = self:peek_stack(frame)
+			for i, v in values do
+				tbl[i] = v
 			end
 		elseif op == OPCODES.CALL_MULTI then
 			frame.ip += 1
@@ -354,6 +506,24 @@ end
 
 function vm:run()
 	return self:execute(self.chunk)
+end
+
+local compiler = require("./compiler")
+local lexer = require("./lexer")
+local astBuilder = require("./parser")
+
+function vm:runSource(source)
+	local tokens = lexer.new(source):run()
+	local ast = astBuilder.new(tokens):run()
+	local compiler = compiler.new()
+	compiler:run(ast)
+
+	compiler:dump(true)
+
+	local vm = vm.new(compiler.chunk)
+	vm:load_stdlib()
+	vm:load_roblox_env()
+	vm:run()
 end
 
 return vm
