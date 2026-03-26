@@ -197,14 +197,19 @@ function parser:parse_function_body(is_method)
 		table.insert(params, "self") -- implicit self
 	end
 	if self:peek().value ~= ")" then
-		table.insert(params, self:expect("IDENTIFIER").value)
-		while self:match("SYMBOL", ",") do
-			if self:peek().value == "..." then
-				self:advance()
-				table.insert(params, "...")
-				break
-			end
+		if self:peek().value == "..." then
+			self:advance()
+			table.insert(params, "...")
+		else
 			table.insert(params, self:expect("IDENTIFIER").value)
+			while self:match("SYMBOL", ",") do
+				if self:peek().value == "..." then
+					self:advance()
+					table.insert(params, "...")
+					break
+				end
+				table.insert(params, self:expect("IDENTIFIER").value)
+			end
 		end
 	end
 	self:expect("SYMBOL", ")")
@@ -325,6 +330,11 @@ function parser:parse_primary()
 		return { kind = "Grouped", expr = expr }
 	end
 
+	if t.type == "OPERATOR" and t.value == "..." then
+		self:advance()
+		return { kind = "Identifier", name = "..." }
+	end
+
 	error(`unexpected token '{t.value}' at line {t.line}`)
 end
 
@@ -365,6 +375,16 @@ end
 function parser:parse_expression_statement()
 	local expr = self:parse_postfix()
 
+	-- collect multiple targets: a, b, c = ...
+	local targets = { expr }
+	while self:peek().value == "," do
+		if expr.kind == "CallExpr" or expr.kind == "MethodCall" then
+			break
+		end
+		self:advance() -- skip ','
+		table.insert(targets, self:parse_postfix())
+	end
+
 	if
 		self:peek().value == "="
 		or self:peek().value == "+="
@@ -377,14 +397,14 @@ function parser:parse_expression_statement()
 		while self:match("SYMBOL", ",") do
 			table.insert(values, self:parse_expression())
 		end
-		return { kind = "Assignment", target = expr, op = op, values = values }
+		return { kind = "Assignment", targets = targets, op = op, values = values }
 	end
 
 	if expr.kind == "CallExpr" or expr.kind == "MethodCall" then
 		return { kind = "CallStatement", expr = expr }
 	end
 
-	error(`unexpected expression at line {self:peek().line}`)
+	error("unexpected expression at line " .. tostring(self:peek().line))
 end
 
 function parser:parse_unary()

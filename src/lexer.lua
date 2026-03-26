@@ -225,6 +225,15 @@ end
 function lexer:operator()
 	local c = self.char
 	local p = self:peek()
+	local p2 = self:peek(2)
+
+	if c == "." and p == "." and p2 == "." then
+		self:advance()
+		self:advance()
+		self:advance()
+		self:emit(TOKEN_TYPES.OPERATOR, "...")
+		return
+	end
 
 	local two = c .. (p or "")
 	local two_char = {

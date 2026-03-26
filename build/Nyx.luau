@@ -1,8 +1,8 @@
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 00:34:53
+-- built   : 2026-03-26 16:13:00
 -- entry   : main.lua
--- inlined : 6 module(s) + entry
+-- inlined : 5 module(s) + entry
 
 local __linker_modules = {}
 local __linker_cache   = {}
@@ -19,6 +19,862 @@ local function __linker_require(name)
     local result = mod()
     __linker_cache[name] = result
     return result
+end
+
+__linker_modules["src/opcodes.lua"] = function()
+local shared = __linker_shared
+local OPCODES = {}
+local OPNAMES = {
+	-- constants / stack
+	"LOAD_CONST", -- push constants[arg] onto stack
+	"LOAD_LOCAL", -- push locals[arg] onto stack
+	"STORE_LOCAL", -- pop stack into locals[arg]
+	"LOAD_GLOBAL", -- push globals[constants[arg]] onto stack
+	"LOAD_UPVALUE", -- push upvalue onto stack
+	"STORE_GLOBAL", -- pop stack into globals[constants[arg]]
+	"PUSH_NIL", -- push nil
+	"PUSH_TRUE", -- push true
+	"PUSH_FALSE", -- push false
+	"POP", -- discard top of stack
+	"CALL_MULTI",
+
+	-- arithmetic
+	"ADD",
+	"SUB",
+	"MUL",
+	"DIV",
+	"MOD",
+	"POW",
+	"IDIV",
+	"UNM", -- unary minus
+
+	-- string
+	"CONCAT", -- concat top two stack values
+
+	-- logic
+	"AND",
+	"OR",
+	"NOT",
+
+	-- comparison (push true/false onto stack)
+	"EQ",
+	"NEQ",
+	"LT",
+	"LTE",
+	"GT",
+	"GTE",
+	"LEN", -- # operator
+
+	-- control flow
+	"JUMP", -- unconditional jump to arg
+	"JUMP_IF_FALSE", -- pop stack, jump to arg if false
+
+	-- tables
+	"NEW_TABLE", -- push a new empty table
+	"SET_FIELD", -- table[constants[arg]] = pop()
+	"GET_FIELD", -- push table[constants[arg]]
+	"SET_INDEX", -- table[pop()] = pop()
+	"GET_INDEX", -- push table[pop()]
+
+	-- functions
+	"CLOSURE", -- push a new function from chunk[arg]
+	"CALL", -- call function with arg arguments
+	"RETURN", -- return arg values from top of stack
+
+	-- misc
+	"MOVE", -- copy locals[arg1] into locals[arg2]
+	"VARARG", -- push varargs onto stack
+	"SET_VARARG_TABLE",
+	"VARARG_FIRST",
+}
+
+for i = 1, #OPNAMES do
+	OPCODES[OPNAMES[i]] = i
+end
+
+return {
+	CODES = OPCODES,
+	NAMES = OPNAMES,
+}
+
+end
+
+__linker_modules["src/compiler.lua"] = function()
+local shared = __linker_shared
+local compiler = {}
+compiler.__index = compiler
+
+local OPCODES, OPNAMES
+do
+	local export = __linker_require("src/opcodes.lua")
+	OPCODES = export.CODES
+	OPNAMES = export.NAMES
+end
+
+function compiler.new(parent)
+	local self = setmetatable({
+		parent = parent, -- reference to enclosing compiler
+		chunk = {
+			code = {},
+			constants = {},
+			locals = {},
+			num_locals = 0,
+			scope_stack = {},
+			upvalue_names = {}, -- list of upvalue names this chunk needs
+		},
+	}, compiler)
+	return self
+end
+function compiler:push_scope()
+	table.insert(self.chunk.scope_stack, {})
+end
+
+function compiler:pop_scope()
+	local scope = table.remove(self.chunk.scope_stack)
+	for name, info in scope do
+		self.chunk.locals[name] = info.prev
+		self.chunk.num_locals -= 1
+	end
+end
+function compiler:emit(op, ...)
+	local args = { ... }
+	table.insert(self.chunk.code, op)
+	for i, v in args do
+		table.insert(self.chunk.code, v)
+	end
+end
+
+function compiler:add_constant(value)
+	for i, v in self.chunk.constants do
+		if v == value then
+			return i - 1 -- reuse constants
+		end
+	end
+	table.insert(self.chunk.constants, value)
+	return #self.chunk.constants - 1
+end
+
+function compiler:add_local(name)
+	local reg = self.chunk.num_locals
+	local scope = self.chunk.scope_stack[#self.chunk.scope_stack]
+	-- store previous value so we can restore it on pop
+	if scope then
+		scope[name] = { reg = reg, prev = self.chunk.locals[name] }
+	end
+	self.chunk.locals[name] = reg
+	self.chunk.num_locals = self.chunk.num_locals + 1
+	return reg
+end
+function compiler:get_local(name)
+	return self.chunk.locals[name]
+end
+
+function compiler:run(node)
+	if node == nil then
+		error("compiler:run() called with nil node")
+	end
+	if node.kind == nil then
+		error("compiler:run() called with node missing 'kind': " .. tostring(node))
+	end
+
+	local handler = {
+		Block = function(n)
+			self:block(n)
+		end,
+		LocalStatement = function(n)
+			self:_local(n)
+		end,
+		Assignment = function(n)
+			self:assign(n)
+		end,
+		IfStatement = function(n)
+			self:_if(n)
+		end,
+		WhileStatement = function(n)
+			self:_while(n)
+		end,
+		ReturnStatement = function(n)
+			self:_return(n)
+		end,
+		CallStatement = function(n)
+			if n.expr.kind == "MethodCall" then
+				self:method_call(n.expr)
+			else
+				self:call(n.expr)
+			end
+			-- self:emit(OPCODES.POP)
+		end,
+		BinaryExpr = function(n)
+			self:binary(n)
+		end,
+		UnaryExpr = function(n)
+			self:unary(n)
+		end,
+		Number = function(n)
+			self:number(n)
+		end,
+		String = function(n)
+			self:string(n)
+		end,
+		Boolean = function(n)
+			self:boolean(n)
+		end,
+		Nil = function(n)
+			self:emit(OPCODES.PUSH_NIL)
+		end,
+		Identifier = function(n)
+			self:identifier(n)
+		end,
+		CallExpr = function(n)
+			self:call(n)
+		end,
+		FieldAccess = function(n)
+			self:field_access(n)
+		end,
+		IndexAccess = function(n)
+			self:index_access(n)
+		end,
+		Grouped = function(n)
+			self:run(n.expr)
+		end,
+		DoStatement = function(n)
+			self:_do(n)
+		end,
+		LocalFunction = function(n)
+			self:local_function(n)
+		end,
+		FunctionStatement = function(n)
+			self:function_statement(n)
+		end,
+		Function = function(n)
+			self:_function(n)
+		end,
+		RepeatStatement = function(n)
+			self:_repeat(n)
+		end,
+		NumericFor = function(n)
+			self:numeric_for(n)
+		end,
+		GenericFor = function(n)
+			self:generic_for(n)
+		end,
+		MethodCall = function(n)
+			self:method_call(n)
+			-- self:emit(OPCODES.POP)
+		end,
+		Table = function(n)
+			self:_table(n)
+		end,
+		Break = function(n)
+			self:_break(n)
+		end,
+	}
+	local h = handler[node.kind]
+	if h then
+		h(node)
+	else
+		error(`unknown node kind: {node.kind}`)
+	end
+end
+
+function compiler:block(node)
+	self:push_scope()
+	for _, stmt in node.body do
+		self:run(stmt)
+	end
+	self:pop_scope()
+end
+
+function compiler:number(node)
+	local idx = self:add_constant(node.value)
+	self:emit(OPCODES.LOAD_CONST, idx)
+end
+
+function compiler:string(node)
+	local idx = self:add_constant(node.value)
+	self:emit(OPCODES.LOAD_CONST, idx)
+end
+
+function compiler:boolean(node)
+	self:emit(node.value and OPCODES.PUSH_TRUE or OPCODES.PUSH_FALSE)
+end
+
+function compiler:identifier(node)
+	if node.name == "..." then
+		self:emit(OPCODES.VARARG)
+		return
+	end
+	local reg = self:get_local(node.name)
+	if reg ~= nil then
+		self:emit(OPCODES.LOAD_LOCAL, reg)
+		return
+	end
+
+	-- walk up parent scopes looking for the name
+	local p = self.parent
+	while p do
+		local preg = p:get_local(node.name)
+		if preg ~= nil then
+			-- it's an upvalue — record it and emit LOAD_UPVALUE
+			table.insert(self.chunk.upvalue_names, node.name)
+			local idx = self:add_constant(node.name)
+			self:emit(OPCODES.LOAD_UPVALUE, idx)
+			return
+		end
+		p = p.parent
+	end
+
+	-- fall back to global
+	local idx = self:add_constant(node.name)
+	self:emit(OPCODES.LOAD_GLOBAL, idx)
+end
+function compiler:_local(node)
+	local num_names = #node.names
+
+	if #node.values == 1 and (node.values[1].kind == "CallExpr" or node.values[1].kind == "MethodCall") then
+		local call = node.values[1]
+
+		-- reserve registers first so they're correct when we store
+		local regs = {}
+		for i, name in node.names do
+			local value = node.values[i]
+			if value and value.kind == "Identifier" and value.name == "..." then
+				print("emitting VARARG_FIRST for", name) -- debug
+				self:emit(OPCODES.VARARG_FIRST)
+			elseif value then
+				self:run(value)
+			else
+				self:emit(OPCODES.PUSH_NIL)
+			end
+			self:add_local(name)
+			self:emit(OPCODES.STORE_LOCAL, self:get_local(name))
+		end
+
+		-- emit the call
+		if call.kind == "CallExpr" then
+			self:run(call.callee)
+			for _, arg in call.args do
+				self:run(arg)
+			end
+			self:emit(OPCODES.CALL_MULTI, #call.args, num_names)
+		else
+			self:push_scope()
+			self:run(call.object)
+			local tmp = self:add_local("__self__")
+			self:emit(OPCODES.STORE_LOCAL, tmp)
+			self:emit(OPCODES.LOAD_LOCAL, tmp)
+			local idx = self:add_constant(call.method)
+			self:emit(OPCODES.GET_FIELD, idx)
+			self:emit(OPCODES.LOAD_LOCAL, tmp)
+			for _, arg in call.args do
+				self:run(arg)
+			end
+			self:emit(OPCODES.CALL_MULTI, #call.args + 1, num_names)
+			self:pop_scope()
+		end
+
+		-- store results: stack top = last result, so store in reverse
+		for i = num_names, 1, -1 do
+			self:emit(OPCODES.STORE_LOCAL, regs[i])
+		end
+		return
+	end
+
+	-- normal case
+	for i, name in node.names do
+		local value = node.values[i]
+		if value then
+			self:run(value)
+		else
+			self:emit(OPCODES.PUSH_NIL)
+		end
+		self:add_local(name)
+		self:emit(OPCODES.STORE_LOCAL, self:get_local(name))
+	end
+end
+
+function compiler:assign(node)
+	-- compile all values first
+	local targets = node.targets or { node.target }
+
+	for i, v in targets do
+		local value = node.values[i]
+		if value then
+			self:run(value)
+		else
+			self:emit(OPCODES.PUSH_NIL)
+		end
+	end
+
+	-- store in reverse order
+	for i = #targets, 1, -1 do
+		local target = targets[i]
+		if target.kind == "FieldAccess" then
+			local idx = self:add_constant(target.field)
+			self:emit(OPCODES.SET_FIELD, idx)
+		elseif target.kind == "IndexAccess" then
+			self:emit(OPCODES.SET_INDEX)
+		else
+			local reg = self:get_local(target.name)
+			if reg ~= nil then
+				self:emit(OPCODES.STORE_LOCAL, reg)
+			else
+				local idx = self:add_constant(target.name)
+				self:emit(OPCODES.STORE_GLOBAL, idx)
+			end
+		end
+	end
+end
+
+function compiler:binary(node)
+	self:run(node.left)
+	self:run(node.right)
+
+	local ops = {
+		["+"] = OPCODES.ADD,
+		["-"] = OPCODES.SUB,
+		["*"] = OPCODES.MUL,
+		["/"] = OPCODES.DIV,
+		["%"] = OPCODES.MOD,
+		["^"] = OPCODES.POW,
+		["//"] = OPCODES.IDIV,
+		["=="] = OPCODES.EQ,
+		["~="] = OPCODES.NEQ,
+		["<"] = OPCODES.LT,
+		["<="] = OPCODES.LTE,
+		[">"] = OPCODES.GT,
+		[">="] = OPCODES.GTE,
+		["and"] = OPCODES.AND,
+		["or"] = OPCODES.OR,
+		[".."] = OPCODES.CONCAT,
+	}
+	local op = ops[node.op]
+	if not op then
+		error(`unknown operator: {node.op}`)
+	end
+	self:emit(op)
+end
+
+function compiler:unary(node)
+	self:run(node.operand)
+	local ops = {
+		["-"] = OPCODES.UNM,
+		["not"] = OPCODES.NOT,
+		["#"] = OPCODES.LEN,
+	}
+	local op = ops[node.op]
+	if not op then
+		error(`unknown unary op: {node.op}`)
+	end
+	self:emit(op)
+end
+
+function compiler:_do(node)
+	self:push_scope()
+	self:run(node.body)
+	self:pop_scope()
+end
+
+function compiler:_if(node)
+	self:run(node.condition)
+	local jump_false = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP_IF_FALSE, 0)
+
+	self:push_scope()
+	self:run(node.body)
+	self:pop_scope()
+
+	local jump_end = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP, 0)
+	self.chunk.code[jump_false + 1] = #self.chunk.code + 1
+
+	for _, ei in node.elseifs do
+		self:push_scope()
+		self:run(ei.body)
+		self:pop_scope()
+	end
+
+	if node.else_body then
+		self:push_scope()
+		self:run(node.else_body)
+		self:pop_scope()
+	end
+
+	self.chunk.code[jump_end + 1] = #self.chunk.code + 1
+end
+
+function compiler:_function(node)
+	local sub = compiler.new(self)
+	sub.chunk.num_params = 0
+	for i, param in node.params do
+		if param == "..." then
+			break -- rest go to varargs
+		end
+		sub:add_local(param)
+		sub.chunk.num_params += 1
+	end
+	sub:push_scope()
+	sub:run(node.body)
+	sub:pop_scope()
+	local idx = self:add_constant(sub.chunk)
+	self:emit(OPCODES.CLOSURE, idx)
+end
+
+function compiler:local_function(node)
+	self:add_local(node.name)
+	self:_function(node.func)
+	self:emit(OPCODES.STORE_LOCAL, self:get_local(node.name))
+end
+
+function compiler:function_statement(node)
+	if node.func == nil then
+		error("function_statement: node.func is nil, name: " .. tostring(node.name[1]))
+	end
+
+	self:_function(node.func)
+
+	if #node.name == 1 then
+		local reg = self:get_local(node.name[1])
+		if reg then
+			self:emit(OPCODES.STORE_LOCAL, reg)
+		else
+			local idx = self:add_constant(node.name[1])
+			self:emit(OPCODES.STORE_GLOBAL, idx)
+		end
+	else
+		-- load base object
+		local reg = self:get_local(node.name[1])
+		if reg then
+			self:emit(OPCODES.LOAD_LOCAL, reg)
+		else
+			local base_idx = self:add_constant(node.name[1])
+			self:emit(OPCODES.LOAD_GLOBAL, base_idx)
+		end
+		-- go through middle chain
+		for i = 2, #node.name - 1 do
+			local idx = self:add_constant(node.name[i])
+			self:emit(OPCODES.GET_FIELD, idx)
+		end
+		-- store into final field
+		local last_idx = self:add_constant(node.name[#node.name])
+		self:emit(OPCODES.SET_FIELD, last_idx)
+	end
+end
+
+function compiler:_repeat(node)
+	local loop_start = #self.chunk.code + 1
+	self:push_scope()
+	for _, stmt in node.body.body do
+		self:run(stmt)
+	end
+	self:run(node.condition) -- pushes result of condition
+	self:emit(OPCODES.JUMP_IF_FALSE, loop_start) -- if condition false, loop again
+	self:pop_scope()
+end
+
+function compiler:numeric_for(node)
+	self:push_scope()
+
+	self:run(node.start)
+	local i_reg = self:add_local(node.name)
+	self:emit(OPCODES.STORE_LOCAL, i_reg)
+
+	self:run(node.limit)
+	local limit_reg = self:add_local("__limit__")
+	self:emit(OPCODES.STORE_LOCAL, limit_reg)
+
+	if node.step then
+		self:run(node.step)
+	else
+		self:emit(OPCODES.LOAD_CONST, self:add_constant(1))
+	end
+	local step_reg = self:add_local("__step__")
+	self:emit(OPCODES.STORE_LOCAL, step_reg)
+
+	-- check step > 0 once
+	self:emit(OPCODES.LOAD_LOCAL, step_reg)
+	self:emit(OPCODES.LOAD_CONST, self:add_constant(0))
+	self:emit(OPCODES.GT)
+	local jump_neg = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP_IF_FALSE, 0)
+
+	-- while i<= limit
+	local pos_start = #self.chunk.code + 1
+	self:emit(OPCODES.LOAD_LOCAL, i_reg)
+	self:emit(OPCODES.LOAD_LOCAL, limit_reg)
+	self:emit(OPCODES.LTE)
+	local pos_exit = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP_IF_FALSE, 0)
+	self:run(node.body)
+	self:emit(OPCODES.LOAD_LOCAL, i_reg)
+	self:emit(OPCODES.LOAD_LOCAL, step_reg)
+	self:emit(OPCODES.ADD)
+	self:emit(OPCODES.STORE_LOCAL, i_reg)
+	self:emit(OPCODES.JUMP, pos_start)
+	self.chunk.code[pos_exit + 1] = #self.chunk.code + 1
+
+	-- jump over negative loop
+	local jump_over_neg = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP, 0)
+
+	-- while i >= limit
+	self.chunk.code[jump_neg + 1] = #self.chunk.code + 1
+	local neg_start = #self.chunk.code + 1
+	self:emit(OPCODES.LOAD_LOCAL, i_reg)
+	self:emit(OPCODES.LOAD_LOCAL, limit_reg)
+	self:emit(OPCODES.GTE)
+	local neg_exit = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP_IF_FALSE, 0)
+	self:run(node.body)
+	self:emit(OPCODES.LOAD_LOCAL, i_reg)
+	self:emit(OPCODES.LOAD_LOCAL, step_reg)
+	self:emit(OPCODES.ADD)
+	self:emit(OPCODES.STORE_LOCAL, i_reg)
+	self:emit(OPCODES.JUMP, neg_start)
+	self.chunk.code[neg_exit + 1] = #self.chunk.code + 1
+
+	self.chunk.code[jump_over_neg + 1] = #self.chunk.code + 1
+	self:pop_scope()
+end
+
+function compiler:generic_for(node)
+	self:push_scope()
+
+	for _, itr in node.iterators do
+		if itr.kind == "CallExpr" then
+			self:run(itr.callee)
+			for _, arg in itr.args do
+				self:run(arg)
+			end
+			self:emit(OPCODES.CALL_MULTI, #itr.args, 3)
+		else
+			self:run(itr)
+		end
+	end
+
+	local var_reg = self:add_local("__var__")
+	self:emit(OPCODES.STORE_LOCAL, var_reg)
+
+	local state_reg = self:add_local("__state__")
+	self:emit(OPCODES.STORE_LOCAL, state_reg)
+
+	local func_reg = self:add_local("__func__")
+	self:emit(OPCODES.STORE_LOCAL, func_reg)
+
+	local loop_vars = {}
+	for _, name in node.names do
+		local reg = self:add_local(name)
+		table.insert(loop_vars, reg)
+		self:emit(OPCODES.PUSH_NIL)
+		self:emit(OPCODES.STORE_LOCAL, reg)
+	end
+
+	local loop_start = #self.chunk.code + 1
+
+	self:emit(OPCODES.LOAD_LOCAL, func_reg)
+	self:emit(OPCODES.LOAD_LOCAL, state_reg)
+	self:emit(OPCODES.LOAD_LOCAL, var_reg)
+	self:emit(OPCODES.CALL_MULTI, 2, #loop_vars)
+
+	for i = #loop_vars, 1, -1 do
+		self:emit(OPCODES.STORE_LOCAL, loop_vars[i])
+	end
+
+	self:emit(OPCODES.LOAD_LOCAL, loop_vars[1])
+	self:emit(OPCODES.STORE_LOCAL, var_reg)
+
+	self:emit(OPCODES.LOAD_LOCAL, loop_vars[1])
+	local jump_out = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP_IF_FALSE, 0)
+
+	self:run(node.body)
+	self:emit(OPCODES.JUMP, loop_start)
+
+	self.chunk.code[jump_out + 1] = #self.chunk.code + 1
+
+	self:pop_scope()
+end
+function compiler:method_call(node)
+	self:push_scope()
+
+	self:run(node.object)
+	local tmp = self:add_local("__self__")
+	self:emit(OPCODES.STORE_LOCAL, tmp)
+
+	self:emit(OPCODES.LOAD_LOCAL, tmp)
+	local idx = self:add_constant(node.method)
+	self:emit(OPCODES.GET_FIELD, idx)
+
+	self:emit(OPCODES.LOAD_LOCAL, tmp)
+
+	for _, arg in node.args do
+		self:run(arg)
+	end
+	self:emit(OPCODES.CALL, #node.args + 1)
+
+	self:pop_scope()
+end
+
+function compiler:_table(node)
+	self:emit(OPCODES.NEW_TABLE)
+	self:push_scope()
+	local tbl_reg = self:add_local("__tbl__")
+	self:emit(OPCODES.STORE_LOCAL, tbl_reg)
+
+	for i, field in node.fields do
+		self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
+		if field.kind == "NamedField" then
+			self:run(field.value)
+			local idx = self:add_constant(field.key)
+			self:emit(OPCODES.SET_FIELD, idx)
+		elseif field.kind == "IndexedField" then
+			self:run(field.key)
+			self:run(field.value)
+			self:emit(OPCODES.SET_INDEX)
+		elseif field.kind == "ValueField" then
+			if field.value.kind == "Identifier" and field.value.name == "..." then
+				-- {...} should insert all varargs
+				self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
+				self:emit(OPCODES.VARARG)
+				self:emit(OPCODES.SET_VARARG_TABLE)
+			else
+				self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
+				local idx = self:add_constant(i)
+				self:emit(OPCODES.LOAD_CONST, idx)
+				self:run(field.value)
+				self:emit(OPCODES.SET_INDEX)
+			end
+		end
+	end
+
+	self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
+	self:pop_scope()
+end
+
+function compiler:_while(node)
+	local loop_start = #self.chunk.code + 1
+	self:run(node.condition)
+	local jump_false = #self.chunk.code + 1
+	self:emit(OPCODES.JUMP_IF_FALSE, 0)
+
+	self.chunk.break_jumps = {} -- collect breaks
+	self:push_scope()
+	self:run(node.body)
+	self:pop_scope()
+
+	self:emit(OPCODES.JUMP, loop_start)
+	self.chunk.code[jump_false + 1] = #self.chunk.code + 1
+
+	-- patch all breaks to here
+	for _, jump in self.chunk.break_jumps do
+		self.chunk.code[jump + 1] = #self.chunk.code + 1
+	end
+	self.chunk.break_jumps = nil
+end
+
+function compiler:_return(node)
+	for _, v in node.values do
+		self:run(v)
+	end
+	self:emit(OPCODES.RETURN, #node.values)
+end
+
+function compiler:call(node)
+	self:run(node.callee)
+	for _, arg in node.args do
+		self:run(arg)
+	end
+	self:emit(OPCODES.CALL, #node.args)
+end
+
+function compiler:field_access(node)
+	self:run(node.object)
+	local idx = self:add_constant(node.field)
+	self:emit(OPCODES.GET_FIELD, idx)
+end
+
+function compiler:index_access(node)
+	self:run(node.object)
+	self:run(node.index)
+	self:emit(OPCODES.GET_INDEX)
+end
+
+function compiler:dump(copy)
+	local chunk = self.chunk
+	local output = ""
+	output ..= "=== CHUNK DUMP ===\n"
+
+	-- constants
+	output ..= ("CONSTANTS (" .. #chunk.constants .. ")")
+	for i, v in chunk.constants do
+		print(string.format("  [%d] %-10s %s", i - 1, type(v), tostring(v)))
+	end
+
+	-- locals
+	output ..= ("\nLOCALS (" .. chunk.num_locals .. ")")
+	for name, reg in chunk.locals do
+		print(string.format("  [%d] %s", reg, name))
+	end
+
+	-- bytecode
+	output ..= ("\nBYTECODE (" .. #chunk.code .. " instructions)")
+	local i = 1
+	while i <= #chunk.code do
+		local op = chunk.code[i]
+		local name = OPNAMES[op] or ("UNKNOWN(" .. tostring(op) .. ")")
+
+		-- opcodes that consume the next value as an argument
+		local has_arg = {
+			LOAD_CONST = true,
+			LOAD_LOCAL = true,
+			STORE_LOCAL = true,
+			LOAD_GLOBAL = true,
+			STORE_GLOBAL = true,
+			JUMP = true,
+			JUMP_IF_FALSE = true,
+			CALL = true,
+			RETURN = true,
+			GET_FIELD = true,
+			SET_FIELD = true,
+			CLOSURE = true,
+			MOVE = true,
+		}
+		local has_two_args = {
+			CALL_MULTI = true,
+		}
+		if has_two_args[name] then
+			local arg1 = chunk.code[i + 1]
+			local arg2 = chunk.code[i + 2]
+			output ..= string.format("  [%03d] %-20s %d %d\n", i, name, arg1, arg2)
+			i = i + 3
+		elseif has_arg[name] then
+			local arg = chunk.code[i + 1]
+			-- if its a constant referencing op, show the value too
+			local extra = ""
+			if
+				(name == "LOAD_CONST" or name == "LOAD_GLOBAL" or name == "STORE_GLOBAL" or name == "GET_FIELD")
+				and chunk.constants[arg + 1]
+			then
+				extra = " ; " .. tostring(chunk.constants[arg + 1])
+			end
+			output ..= (string.format("  [%03d] %-20s %d%s\n", i, name, arg, extra))
+			i = i + 2
+		else
+			output ..= (string.format("  [%03d] %-20s\n", i, name))
+			i = i + 1
+		end
+	end
+
+	output ..= "\n=================="
+
+	print(output)
+	if copy then
+		setclipboard(output)
+	end
+end
+
+return compiler
+
 end
 
 __linker_modules["src/lexer.lua"] = function()
@@ -250,6 +1106,15 @@ end
 function lexer:operator()
 	local c = self.char
 	local p = self:peek()
+	local p2 = self:peek(2)
+
+	if c == "." and p == "." and p2 == "." then
+		self:advance()
+		self:advance()
+		self:advance()
+		self:emit(TOKEN_TYPES.OPERATOR, "...")
+		return
+	end
 
 	local two = c .. (p or "")
 	local two_char = {
@@ -533,14 +1398,19 @@ function parser:parse_function_body(is_method)
 		table.insert(params, "self") -- implicit self
 	end
 	if self:peek().value ~= ")" then
-		table.insert(params, self:expect("IDENTIFIER").value)
-		while self:match("SYMBOL", ",") do
-			if self:peek().value == "..." then
-				self:advance()
-				table.insert(params, "...")
-				break
-			end
+		if self:peek().value == "..." then
+			self:advance()
+			table.insert(params, "...")
+		else
 			table.insert(params, self:expect("IDENTIFIER").value)
+			while self:match("SYMBOL", ",") do
+				if self:peek().value == "..." then
+					self:advance()
+					table.insert(params, "...")
+					break
+				end
+				table.insert(params, self:expect("IDENTIFIER").value)
+			end
 		end
 	end
 	self:expect("SYMBOL", ")")
@@ -661,6 +1531,11 @@ function parser:parse_primary()
 		return { kind = "Grouped", expr = expr }
 	end
 
+	if t.type == "OPERATOR" and t.value == "..." then
+		self:advance()
+		return { kind = "Identifier", name = "..." }
+	end
+
 	error(`unexpected token '{t.value}' at line {t.line}`)
 end
 
@@ -701,6 +1576,16 @@ end
 function parser:parse_expression_statement()
 	local expr = self:parse_postfix()
 
+	-- collect multiple targets: a, b, c = ...
+	local targets = { expr }
+	while self:peek().value == "," do
+		if expr.kind == "CallExpr" or expr.kind == "MethodCall" then
+			break
+		end
+		self:advance() -- skip ','
+		table.insert(targets, self:parse_postfix())
+	end
+
 	if
 		self:peek().value == "="
 		or self:peek().value == "+="
@@ -713,14 +1598,14 @@ function parser:parse_expression_statement()
 		while self:match("SYMBOL", ",") do
 			table.insert(values, self:parse_expression())
 		end
-		return { kind = "Assignment", target = expr, op = op, values = values }
+		return { kind = "Assignment", targets = targets, op = op, values = values }
 	end
 
 	if expr.kind == "CallExpr" or expr.kind == "MethodCall" then
 		return { kind = "CallStatement", expr = expr }
 	end
 
-	error(`unexpected expression at line {self:peek().line}`)
+	error("unexpected expression at line " .. tostring(self:peek().line))
 end
 
 function parser:parse_unary()
@@ -822,879 +1707,6 @@ return parser
 
 end
 
-__linker_modules["src/opcodes.lua"] = function()
-local shared = __linker_shared
-local OPCODES = {}
-local OPNAMES = {
-	-- constants / stack
-	"LOAD_CONST", -- push constants[arg] onto stack
-	"LOAD_LOCAL", -- push locals[arg] onto stack
-	"STORE_LOCAL", -- pop stack into locals[arg]
-	"LOAD_GLOBAL", -- push globals[constants[arg]] onto stack
-	"LOAD_UPVALUE", -- push upvalue onto stack
-	"STORE_GLOBAL", -- pop stack into globals[constants[arg]]
-	"PUSH_NIL", -- push nil
-	"PUSH_TRUE", -- push true
-	"PUSH_FALSE", -- push false
-	"POP", -- discard top of stack
-	"CALL_MULTI",
-
-	-- arithmetic
-	"ADD",
-	"SUB",
-	"MUL",
-	"DIV",
-	"MOD",
-	"POW",
-	"IDIV",
-	"UNM", -- unary minus
-
-	-- string
-	"CONCAT", -- concat top two stack values
-
-	-- logic
-	"AND",
-	"OR",
-	"NOT",
-
-	-- comparison (push true/false onto stack)
-	"EQ",
-	"NEQ",
-	"LT",
-	"LTE",
-	"GT",
-	"GTE",
-	"LEN", -- # operator
-
-	-- control flow
-	"JUMP", -- unconditional jump to arg
-	"JUMP_IF_FALSE", -- pop stack, jump to arg if false
-
-	-- tables
-	"NEW_TABLE", -- push a new empty table
-	"SET_FIELD", -- table[constants[arg]] = pop()
-	"GET_FIELD", -- push table[constants[arg]]
-	"SET_INDEX", -- table[pop()] = pop()
-	"GET_INDEX", -- push table[pop()]
-
-	-- functions
-	"CLOSURE", -- push a new function from chunk[arg]
-	"CALL", -- call function with arg arguments
-	"RETURN", -- return arg values from top of stack
-
-	-- misc
-	"MOVE", -- copy locals[arg1] into locals[arg2]
-	"VARARG", -- push varargs onto stack
-}
-
-for i = 1, #OPNAMES do
-	OPCODES[OPNAMES[i]] = i
-end
-
-return {
-	CODES = OPCODES,
-	NAMES = OPNAMES,
-}
-
-end
-
-__linker_modules["src/compiler.lua"] = function()
-local shared = __linker_shared
-local compiler = {}
-compiler.__index = compiler
-
-local OPCODES, OPNAMES
-do
-	local export = __linker_require("src/opcodes.lua")
-	OPCODES = export.CODES
-	OPNAMES = export.NAMES
-end
-
-function compiler.new()
-	local self = setmetatable({
-		chunk = {
-			code = {}, -- bytecode instructions
-			constants = {}, -- number/string literals
-			locals = {}, -- name -> register index
-			num_locals = 0,
-			scope_stack = {},
-		},
-	}, compiler)
-
-	return self
-end
-
-function compiler:push_scope()
-	table.insert(self.chunk.scope_stack, {})
-end
-
-function compiler:pop_scope()
-	local scope = table.remove(self.chunk.scope_stack)
-	for name, info in scope do
-		self.chunk.locals[name] = info.prev
-		self.chunk.num_locals -= 1
-	end
-end
-function compiler:emit(op, ...)
-	local args = { ... }
-	table.insert(self.chunk.code, op)
-	for i, v in args do
-		table.insert(self.chunk.code, v)
-	end
-end
-
-function compiler:add_constant(value)
-	for i, v in self.chunk.constants do
-		if v == value then
-			return i - 1 -- reuse constants
-		end
-	end
-	table.insert(self.chunk.constants, value)
-	return #self.chunk.constants - 1
-end
-
-function compiler:add_local(name)
-	local reg = self.chunk.num_locals
-	local scope = self.chunk.scope_stack[#self.chunk.scope_stack]
-	-- store previous value so we can restore it on pop
-	if scope then
-		scope[name] = { reg = reg, prev = self.chunk.locals[name] }
-	end
-	self.chunk.locals[name] = reg
-	self.chunk.num_locals = self.chunk.num_locals + 1
-	return reg
-end
-function compiler:get_local(name)
-	return self.chunk.locals[name]
-end
-
-function compiler:run(node)
-	if node == nil then
-		error("compiler:run() called with nil node")
-	end
-	if node.kind == nil then
-		error("compiler:run() called with node missing 'kind': " .. tostring(node))
-	end
-
-	local handler = {
-		Block = function(n)
-			self:block(n)
-		end,
-		LocalStatement = function(n)
-			self:_local(n)
-		end,
-		Assignment = function(n)
-			self:assign(n)
-		end,
-		IfStatement = function(n)
-			self:_if(n)
-		end,
-		WhileStatement = function(n)
-			self:_while(n)
-		end,
-		ReturnStatement = function(n)
-			self:_return(n)
-		end,
-		CallStatement = function(n)
-			if n.expr.kind == "MethodCall" then
-				self:_method_call(n.expr)
-			else
-				self:call(n.expr)
-			end
-			-- self:emit(OPCODES.POP)
-		end,
-		BinaryExpr = function(n)
-			self:binary(n)
-		end,
-		UnaryExpr = function(n)
-			self:unary(n)
-		end,
-		Number = function(n)
-			self:number(n)
-		end,
-		String = function(n)
-			self:string(n)
-		end,
-		Boolean = function(n)
-			self:boolean(n)
-		end,
-		Nil = function(n)
-			self:emit(OPCODES.PUSH_NIL)
-		end,
-		Identifier = function(n)
-			self:identifier(n)
-		end,
-		CallExpr = function(n)
-			self:call(n)
-		end,
-		FieldAccess = function(n)
-			self:field_access(n)
-		end,
-		IndexAccess = function(n)
-			self:index_access(n)
-		end,
-		Grouped = function(n)
-			self:run(n.expr)
-		end,
-		DoStatement = function(n)
-			self:_do(n)
-		end,
-		LocalFunction = function(n)
-			self:local_function(n)
-		end,
-		FunctionStatement = function(n)
-			self:function_statement(n)
-		end,
-		Function = function(n)
-			self:_function(n)
-		end,
-		RepeatStatement = function(n)
-			self:_repeat(n)
-		end,
-		NumericFor = function(n)
-			self:numeric_for(n)
-		end,
-		GenericFor = function(n)
-			self:generic_for(n)
-		end,
-		MethodCall = function(n)
-			self:method_call(n)
-			-- self:emit(OPCODES.POP)
-		end,
-		Table = function(n)
-			self:_table(n)
-		end,
-		Break = function(n)
-			self:_break(n)
-		end,
-	}
-	local h = handler[node.kind]
-	if h then
-		h(node)
-	else
-		error(`unknown node kind: {node.kind}`)
-	end
-end
-
-function compiler:block(node)
-	self:push_scope()
-	for _, stmt in node.body do
-		self:run(stmt)
-	end
-	self:pop_scope()
-end
-
-function compiler:number(node)
-	local idx = self:add_constant(node.value)
-	self:emit(OPCODES.LOAD_CONST, idx)
-end
-
-function compiler:string(node)
-	local idx = self:add_constant(node.value)
-	self:emit(OPCODES.LOAD_CONST, idx)
-end
-
-function compiler:boolean(node)
-	self:emit(node.value and OPCODES.PUSH_TRUE or OPCODES.PUSH_FALSE)
-end
-
-function compiler:identifier(node)
-	local reg = self:get_local(node.name)
-	if reg then
-		self:emit(OPCODES.LOAD_LOCAL, reg)
-	else
-		local idx = self:add_constant(node.name)
-		self:emit(OPCODES.LOAD_GLOBAL, idx)
-	end
-end
-
-function compiler:_local(node)
-	-- compile values then connect names to values
-	for i, name in node.names do
-		local value = node.values[i]
-		if value then
-			self:run(value)
-		else
-			self:emit(OPCODES.PUSH_NIL) -- uninitialized locals default to nil
-		end
-		self:add_local(name)
-		self:emit(OPCODES.STORE_LOCAL, self:get_local(name))
-	end
-end
-
-function compiler:assign(node)
-	if node.target.kind == "FieldAccess" then
-		self:run(node.target.object) -- push table
-		self:run(node.values[1]) -- push value
-		local idx = self:add_constant(node.target.field)
-		self:emit(OPCODES.SET_FIELD, idx)
-	elseif node.target.kind == "IndexAccess" then
-		self:run(node.target.object) -- push table
-		self:run(node.target.index) -- push key
-		self:run(node.values[1]) -- push value
-		self:emit(OPCODES.SET_INDEX)
-	else
-		-- simple name assignment (existing logic)
-		self:run(node.values[1])
-		local reg = self:get_local(node.target.name)
-		if reg then
-			self:emit(OPCODES.STORE_LOCAL, reg)
-		else
-			local idx = self:add_constant(node.target.name)
-			self:emit(OPCODES.STORE_GLOBAL, idx)
-		end
-	end
-end
-
-function compiler:binary(node)
-	self:run(node.left)
-	self:run(node.right)
-
-	local ops = {
-		["+"] = OPCODES.ADD,
-		["-"] = OPCODES.SUB,
-		["*"] = OPCODES.MUL,
-		["/"] = OPCODES.DIV,
-		["%"] = OPCODES.MOD,
-		["^"] = OPCODES.POW,
-		["//"] = OPCODES.IDIV,
-		["=="] = OPCODES.EQ,
-		["~="] = OPCODES.NEQ,
-		["<"] = OPCODES.LT,
-		["<="] = OPCODES.LTE,
-		[">"] = OPCODES.GT,
-		[">="] = OPCODES.GTE,
-		["and"] = OPCODES.AND,
-		["or"] = OPCODES.OR,
-		[".."] = OPCODES.CONCAT,
-	}
-	local op = ops[node.op]
-	if not op then
-		error(`unknown operator: {node.op}`)
-	end
-	self:emit(op)
-end
-
-function compiler:unary(node)
-	self:run(node.operand)
-	local ops = {
-		["-"] = OPCODES.UNM,
-		["not"] = OPCODES.NOT,
-		["#"] = OPCODES.LEN,
-	}
-	local op = ops[node.op]
-	if not op then
-		error(`unknown unary op: {node.op}`)
-	end
-	self:emit(op)
-end
-
-function compiler:_do(node)
-	self:push_scope()
-	self:run(node.body)
-	self:pop_scope()
-end
-
-function compiler:_if(node)
-	self:run(node.condition)
-	local jump_false = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP_IF_FALSE, 0)
-
-	self:push_scope()
-	self:run(node.body)
-	self:pop_scope()
-
-	local jump_end = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP, 0)
-	self.chunk.code[jump_false + 1] = #self.chunk.code + 1
-
-	for _, ei in node.elseifs do
-		self:push_scope()
-		self:run(ei.body)
-		self:pop_scope()
-	end
-
-	if node.else_body then
-		self:push_scope()
-		self:run(node.else_body)
-		self:pop_scope()
-	end
-
-	self.chunk.code[jump_end + 1] = #self.chunk.code + 1
-end
-
-function compiler:_function(node)
-	if node == nil then
-		error("_function called with nil node")
-	end
-	if node.body == nil then
-		error("_function called with nil body, node kind: " .. tostring(node.kind))
-	end
-
-	-- create a new compiler for the func body
-	local sub = compiler.new()
-	-- add params as locals in the sub compiler
-	for i, param in node.params do
-		sub:add_local(param)
-	end
-	sub:push_scope()
-	sub:run(node.body)
-	sub:pop_scope()
-	-- store the sub chunk as a constant and emit CLOSURE
-	local idx = self:add_constant(sub.chunk)
-	self:emit(OPCODES.CLOSURE, idx)
-end
-
-function compiler:local_function(node)
-	self:add_local(node.name)
-	self:_function(node.func)
-	self:emit(OPCODES.STORE_LOCAL, self:get_local(node.name))
-end
-
-function compiler:function_statement(node)
-	if node.func == nil then
-		error("function_statement: node.func is nil, name: " .. tostring(node.name[1]))
-	end
-
-	self:_function(node.func)
-
-	if #node.name == 1 then
-		local reg = self:get_local(node.name[1])
-		if reg then
-			self:emit(OPCODES.STORE_LOCAL, reg)
-		else
-			local idx = self:add_constant(node.name[1])
-			self:emit(OPCODES.STORE_GLOBAL, idx)
-		end
-	else
-		-- load base object, checking locals first
-		local reg = self:get_local(node.name[1])
-		if reg then
-			self:emit(OPCODES.LOAD_LOCAL, reg)
-		else
-			local base_idx = self:add_constant(node.name[1])
-			self:emit(OPCODES.LOAD_GLOBAL, base_idx)
-		end
-		-- traverse middle chain
-		for i = 2, #node.name - 1 do
-			local idx = self:add_constant(node.name[i])
-			self:emit(OPCODES.GET_FIELD, idx)
-		end
-		-- store into final field
-		local last_idx = self:add_constant(node.name[#node.name])
-		self:emit(OPCODES.SET_FIELD, last_idx)
-	end
-end
-
-function compiler:_repeat(node)
-	local loop_start = #self.chunk.code + 1
-	self:push_scope()
-	self:run(node.body)
-	self:run(node.condition) -- condition is checked at the end
-	self:pop_scope()
-	self:emit(OPCODES.NOT) -- repeat until condition is true
-	self:emit(OPCODES.JUMP_IF_FALSE, loop_start + 1)
-end
-
-function compiler:numeric_for(node)
-	self:push_scope()
-
-	self:run(node.start)
-	local i_reg = self:add_local(node.name)
-	self:emit(OPCODES.STORE_LOCAL, i_reg)
-
-	self:run(node.limit)
-	local limit_reg = self:add_local("__limit__")
-	self:emit(OPCODES.STORE_LOCAL, limit_reg)
-
-	if node.step then
-		self:run(node.step)
-	else
-		self:emit(OPCODES.LOAD_CONST, self:add_constant(1))
-	end
-	local step_reg = self:add_local("__step__")
-	self:emit(OPCODES.STORE_LOCAL, step_reg)
-
-	-- check step > 0 once
-	self:emit(OPCODES.LOAD_LOCAL, step_reg)
-	self:emit(OPCODES.LOAD_CONST, self:add_constant(0))
-	self:emit(OPCODES.GT)
-	local jump_neg = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP_IF_FALSE, 0)
-
-	-- while i<= limit
-	local pos_start = #self.chunk.code + 1
-	self:emit(OPCODES.LOAD_LOCAL, i_reg)
-	self:emit(OPCODES.LOAD_LOCAL, limit_reg)
-	self:emit(OPCODES.LTE)
-	local pos_exit = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP_IF_FALSE, 0)
-	self:run(node.body)
-	self:emit(OPCODES.LOAD_LOCAL, i_reg)
-	self:emit(OPCODES.LOAD_LOCAL, step_reg)
-	self:emit(OPCODES.ADD)
-	self:emit(OPCODES.STORE_LOCAL, i_reg)
-	self:emit(OPCODES.JUMP, pos_start)
-	self.chunk.code[pos_exit + 1] = #self.chunk.code + 1
-
-	-- jump over negative loop
-	local jump_over_neg = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP, 0)
-
-	-- while i >= limit
-	self.chunk.code[jump_neg + 1] = #self.chunk.code + 1
-	local neg_start = #self.chunk.code + 1
-	self:emit(OPCODES.LOAD_LOCAL, i_reg)
-	self:emit(OPCODES.LOAD_LOCAL, limit_reg)
-	self:emit(OPCODES.GTE)
-	local neg_exit = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP_IF_FALSE, 0)
-	self:run(node.body)
-	self:emit(OPCODES.LOAD_LOCAL, i_reg)
-	self:emit(OPCODES.LOAD_LOCAL, step_reg)
-	self:emit(OPCODES.ADD)
-	self:emit(OPCODES.STORE_LOCAL, i_reg)
-	self:emit(OPCODES.JUMP, neg_start)
-	self.chunk.code[neg_exit + 1] = #self.chunk.code + 1
-
-	self.chunk.code[jump_over_neg + 1] = #self.chunk.code + 1
-	self:pop_scope()
-end
-
-function compiler:generic_for(node)
-	self:push_scope()
-
-	for _, itr in node.iterators do
-		if itr.kind == "CallExpr" then
-			self:run(itr.callee)
-			for _, arg in itr.args do
-				self:run(arg)
-			end
-			self:emit(OPCODES.CALL_MULTI, #itr.args, 3)
-		else
-			self:run(itr)
-		end
-	end
-
-	local var_reg = self:add_local("__var__")
-	self:emit(OPCODES.STORE_LOCAL, var_reg)
-
-	local state_reg = self:add_local("__state__")
-	self:emit(OPCODES.STORE_LOCAL, state_reg)
-
-	local func_reg = self:add_local("__func__")
-	self:emit(OPCODES.STORE_LOCAL, func_reg)
-
-	local loop_vars = {}
-	for _, name in node.names do
-		local reg = self:add_local(name)
-		table.insert(loop_vars, reg)
-		self:emit(OPCODES.PUSH_NIL)
-		self:emit(OPCODES.STORE_LOCAL, reg)
-	end
-
-	local loop_start = #self.chunk.code + 1
-
-	self:emit(OPCODES.LOAD_LOCAL, func_reg)
-	self:emit(OPCODES.LOAD_LOCAL, state_reg)
-	self:emit(OPCODES.LOAD_LOCAL, var_reg)
-	self:emit(OPCODES.CALL_MULTI, 2, #loop_vars)
-
-	for i = #loop_vars, 1, -1 do
-		self:emit(OPCODES.STORE_LOCAL, loop_vars[i])
-	end
-
-	self:emit(OPCODES.LOAD_LOCAL, loop_vars[1])
-	self:emit(OPCODES.STORE_LOCAL, var_reg)
-
-	self:emit(OPCODES.LOAD_LOCAL, loop_vars[1])
-	local jump_out = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP_IF_FALSE, 0)
-
-	self:run(node.body)
-	self:emit(OPCODES.JUMP, loop_start)
-
-	self.chunk.code[jump_out + 1] = #self.chunk.code + 1
-
-	self:pop_scope()
-end
-function compiler:_method_call(node)
-	self:run(node.object)
-
-	local tmp = self:add_local("__self__")
-	self:emit(OPCODES.STORE_LOCAL, tmp)
-
-	-- get the method from the object
-	self:emit(OPCODES.LOAD_LOCAL, tmp)
-	local idx = self:add_constant(node.method)
-	self:emit(OPCODES.GET_FIELD, idx) -- push the method
-
-	-- push object as first argument (self)
-	self:emit(OPCODES.LOAD_LOCAL, tmp)
-
-	for _, arg in node.args do
-		self:run(arg)
-	end
-	self:emit(OPCODES.CALL, #node.args + 1) -- +1 for implicit self
-
-	-- clean up temp
-	self.chunk.locals["__self__"] = nil
-	self.chunk.num_locals -= 1
-end
-
-function compiler:_table(node)
-	self:emit(OPCODES.NEW_TABLE)
-	self:push_scope()
-	local tbl_reg = self:add_local("__tbl__")
-	self:emit(OPCODES.STORE_LOCAL, tbl_reg)
-
-	for i, field in node.fields do
-		self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
-		if field.kind == "NamedField" then
-			self:run(field.value)
-			local idx = self:add_constant(field.key)
-			self:emit(OPCODES.SET_FIELD, idx)
-		elseif field.kind == "IndexedField" then
-			self:run(field.key)
-			self:run(field.value)
-			self:emit(OPCODES.SET_INDEX)
-		elseif field.kind == "ValueField" then
-			local idx = self:add_constant(i)
-			self:emit(OPCODES.LOAD_CONST, idx)
-			self:run(field.value)
-			self:emit(OPCODES.SET_INDEX)
-		end
-	end
-
-	self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
-	self:pop_scope()
-end
-
-function compiler:_while(node)
-	local loop_start = #self.chunk.code + 1
-	self:run(node.condition)
-	local jump_false = #self.chunk.code + 1
-	self:emit(OPCODES.JUMP_IF_FALSE, 0)
-
-	self.chunk.break_jumps = {} -- collect breaks
-	self:push_scope()
-	self:run(node.body)
-	self:pop_scope()
-
-	self:emit(OPCODES.JUMP, loop_start)
-	self.chunk.code[jump_false + 1] = #self.chunk.code + 1
-
-	-- patch all breaks to here
-	for _, jump in self.chunk.break_jumps do
-		self.chunk.code[jump + 1] = #self.chunk.code + 1
-	end
-	self.chunk.break_jumps = nil
-end
-
-function compiler:_return(node)
-	for _, v in node.values do
-		self:run(v)
-	end
-	self:emit(OPCODES.RETURN, #node.values)
-end
-
-function compiler:call(node)
-	self:run(node.callee)
-	for _, arg in node.args do
-		self:run(arg)
-	end
-	self:emit(OPCODES.CALL, #node.args)
-end
-
-function compiler:field_access(node)
-	self:run(node.object)
-	local idx = self:add_constant(node.field)
-	self:emit(OPCODES.GET_FIELD, idx)
-end
-
-function compiler:index_access(node)
-	self:run(node.object)
-	self:run(node.index)
-	self:emit(OPCODES.GET_INDEX)
-end
-
-function compiler:dump(copy)
-	local chunk = self.chunk
-	local output = ""
-	output ..= "=== CHUNK DUMP ===\n"
-
-	-- constants
-	output ..= ("CONSTANTS (" .. #chunk.constants .. ")")
-	for i, v in chunk.constants do
-		print(string.format("  [%d] %-10s %s", i - 1, type(v), tostring(v)))
-	end
-
-	-- locals
-	output ..= ("\nLOCALS (" .. chunk.num_locals .. ")")
-	for name, reg in chunk.locals do
-		print(string.format("  [%d] %s", reg, name))
-	end
-
-	-- bytecode
-	output ..= ("\nBYTECODE (" .. #chunk.code .. " instructions)")
-	local i = 1
-	while i <= #chunk.code do
-		local op = chunk.code[i]
-		local name = OPNAMES[op] or ("UNKNOWN(" .. tostring(op) .. ")")
-
-		-- opcodes that consume the next value as an argument
-		local has_arg = {
-			LOAD_CONST = true,
-			LOAD_LOCAL = true,
-			STORE_LOCAL = true,
-			LOAD_GLOBAL = true,
-			STORE_GLOBAL = true,
-			JUMP = true,
-			JUMP_IF_FALSE = true,
-			CALL = true,
-			RETURN = true,
-			GET_FIELD = true,
-			SET_FIELD = true,
-			CLOSURE = true,
-			MOVE = true,
-		}
-
-		if has_arg[name] then
-			local arg = chunk.code[i + 1]
-			-- if its a constant referencing op, show the value too
-			local extra = ""
-			if
-				(name == "LOAD_CONST" or name == "LOAD_GLOBAL" or name == "STORE_GLOBAL" or name == "GET_FIELD")
-				and chunk.constants[arg + 1]
-			then
-				extra = " ; " .. tostring(chunk.constants[arg + 1])
-			end
-			output ..= (string.format("  [%03d] %-20s %d%s\n", i, name, arg, extra))
-			i = i + 2
-		else
-			output ..= (string.format("  [%03d] %-20s\n", i, name))
-			i = i + 1
-		end
-	end
-
-	output ..= "\n=================="
-
-	print(output)
-	if copy then
-		setclipboard(output)
-	end
-end
-
-return compiler
-
-end
-
-__linker_modules["tests/allOpcodes.lua"] = function()
-local shared = __linker_shared
-return [[
-local a = 10
-local b = 3
-local add = a + b
-local sub = a - b
-local mul = a * b
-local div = a / b
-local mod = a % b
-local idiv = a // b
-local pow = a ^ b
-local unm = -a
-print(add, sub, mul, div, mod, idiv, pow, unm)
-
-local s = "hello" .. " " .. "world"
-local l = #s
-print(s, l)
-
-local t = true
-local f = false
-print(t and f, t or f, not t)
-
-
-print(a == b, a ~= b, a < b, a <= b, a > b, a >= b)
-
-local n = nil
-print(n)
-
-if a > 5 then
-	print("a > 5")
-elseif a == 5 then
-	print("a == 5")
-else
-	print("a < 5")
-end
-
-local i = 0
-while i < 3 do
-	print("while", i)
-	i = i + 1
-end
-
-local j = 0
-repeat
-	print("repeat", j)
-	j = j + 1
-until j >= 3
-
-for x = 1, 3 do
-	print("for+", x)
-end
-
-for x = 3, 1, -1 do
-	print("for-", x)
-end
-
-local tbl = {
-	["key"] = "value",
-	name = "waaaa",
-	[1] = "indexed",
-}
-print(tbl["key"], tbl.name, tbl[1])
-
-tbl["dynamic"] = "yes"
-print(tbl["dynamic"])
-
-local counts = { a = 1, b = 2, c = 3 }
-for k, v in pairs(counts) do
-	print("pairs", k, v)
-end
-
-
-local function add2(x, y)
-	return x + y
-end
-print(add2(10, 20))
-
-local function outer(x)
-	local function inner(y)
-		return x + y
-	end
-	return inner(5)
-end
-print(outer(10))
-
-do
-	local scoped = "inside"
-	print(scoped)
-end
-
-local function multi()
-	return 1, 2, 3
-end
-local r1, r2, r3 = multi()
-print(r1, r2, r3)
-
-function myGlobal(x)
-	return x * 2
-end
-print(myGlobal(7))
-
-]]
-
-end
-
 __linker_modules["src/vm.lua"] = function()
 local shared = __linker_shared
 local vm = {}
@@ -1736,7 +1748,6 @@ function vm:load_stdlib()
 	self.globals["rawequal"] = rawequal
 	self.globals["setmetatable"] = setmetatable
 	self.globals["getmetatable"] = getmetatable
-	self.globals["game"] = game
 
 	self.globals["math"] = {
 		floor = math.floor,
@@ -1784,6 +1795,110 @@ function vm:load_stdlib()
 		move = table.move,
 	}
 end
+-- roblox env
+function vm:load_roblox_env()
+	self.globals["game"] = game
+	self.globals["workspace"] = workspace
+	self.globals["script"] = script
+
+	self.globals["Instance"] = {
+		new = Instance.new,
+		fromExisting = Instance.fromExisting,
+	}
+
+	self.globals["Vector3"] = {
+		new = Vector3.new,
+		zero = Vector3.zero,
+		one = Vector3.one,
+		xAxis = Vector3.xAxis,
+		yAxis = Vector3.yAxis,
+		zAxis = Vector3.zAxis,
+	}
+
+	self.globals["Vector2"] = {
+		new = Vector2.new,
+		zero = Vector2.zero,
+		one = Vector2.one,
+	}
+
+	self.globals["CFrame"] = {
+		new = CFrame.new,
+		fromEulerAnglesXYZ = CFrame.fromEulerAnglesXYZ,
+		fromEulerAnglesYXZ = CFrame.fromEulerAnglesYXZ,
+		Angles = CFrame.Angles,
+		lookAt = CFrame.lookAt,
+		identity = CFrame.identity,
+	}
+
+	self.globals["Color3"] = {
+		new = Color3.new,
+		fromRGB = Color3.fromRGB,
+		fromHSV = Color3.fromHSV,
+		fromHex = Color3.fromHex,
+	}
+
+	self.globals["UDim"] = {
+		new = UDim.new,
+	}
+
+	self.globals["UDim2"] = {
+		new = UDim2.new,
+		fromScale = UDim2.fromScale,
+		fromOffset = UDim2.fromOffset,
+	}
+
+	self.globals["Rect"] = {
+		new = Rect.new,
+	}
+
+	self.globals["Ray"] = {
+		new = Ray.new,
+	}
+
+	self.globals["TweenInfo"] = {
+		new = TweenInfo.new,
+	}
+
+	self.globals["NumberSequence"] = {
+		new = NumberSequence.new,
+	}
+
+	self.globals["NumberSequenceKeypoint"] = {
+		new = NumberSequenceKeypoint.new,
+	}
+
+	self.globals["ColorSequence"] = {
+		new = ColorSequence.new,
+	}
+
+	self.globals["ColorSequenceKeypoint"] = {
+		new = ColorSequenceKeypoint.new,
+	}
+
+	self.globals["Enum"] = Enum
+
+	self.globals["task"] = {
+		wait = task.wait,
+		spawn = task.spawn,
+		delay = task.delay,
+		defer = task.defer,
+		cancel = task.cancel,
+	}
+
+	self.globals["wait"] = task.wait
+	self.globals["spawn"] = task.spawn
+	self.globals["delay"] = task.delay
+
+	self.globals["tick"] = tick
+	self.globals["time"] = time
+	self.globals["os"] = {
+		time = os.time,
+		clock = os.clock,
+		date = os.date,
+		difftime = os.difftime,
+	}
+	self.globals["require"] = require
+end
 
 -- create a new call frame
 function vm:make_frame(chunk, args, upvalues)
@@ -1794,14 +1909,21 @@ function vm:make_frame(chunk, args, upvalues)
 		stack = {},
 		top = 0,
 		upvalues = upvalues or {},
+		varargs = {},
 	}
 	if args then
-		for i, v in ipairs(args) do
-			frame.locals[i - 1] = v
+		local num_params = chunk.num_params or 0
+		for i, v in args do
+			if i <= num_params then
+				frame.locals[i - 1] = v
+			else
+				table.insert(frame.varargs, v)
+			end
 		end
 	end
 	return frame
 end
+
 function vm:push(frame, value)
 	frame.top = (frame.top or 0) + 1
 	frame.stack[frame.top] = value
@@ -1926,7 +2048,14 @@ function vm:execute(chunk, args, upvalues)
 		elseif op == OPCODES.GTE then
 			local b, a = self:pop(frame), self:pop(frame)
 			self:push(frame, a >= b)
-
+		elseif op == OPCODES.VARARG then
+			for _, v in frame.varargs do
+				self:push(frame, v)
+			end
+			-- push the count so CALL knows how many were pushed
+			self:push(frame, { __vararg_count = #frame.varargs })
+		elseif op == OPCODES.VARARG_FIRST then
+			self:push(frame, frame.varargs[1])
 		-- control flow
 		elseif op == OPCODES.JUMP then
 			frame.ip += 1
@@ -1941,7 +2070,6 @@ function vm:execute(chunk, args, upvalues)
 				frame.ip = target
 				continue
 			end
-
 		-- tables
 		elseif op == OPCODES.NEW_TABLE then
 			self:push(frame, {})
@@ -1974,6 +2102,7 @@ function vm:execute(chunk, args, upvalues)
 			local idx = frame.chunk.code[frame.ip]
 			local sub_chunk = frame.chunk.constants[idx + 1]
 			local f_upvalues = {}
+			-- get current locals by name
 			for name, reg in pairs(frame.chunk.locals) do
 				f_upvalues[name] = frame.locals[reg]
 			end
@@ -1993,16 +2122,40 @@ function vm:execute(chunk, args, upvalues)
 			frame.ip += 1
 			local arg_count = frame.chunk.code[frame.ip]
 			local f_args = {}
-			for i = arg_count, 1, -1 do
-				f_args[i] = self:pop(frame)
+
+			-- check if top of stack is a vararg
+			local top = self:peek_stack(frame)
+			if type(top) == "table" and top.__vararg_count then
+				self:pop(frame)
+				local vararg_count = top.__vararg_count
+				-- pop varargs
+				local varargs = {}
+				for i = vararg_count, 1, -1 do
+					varargs[i] = self:pop(frame)
+				end
+				-- pop remaining normal args
+				local normal = {}
+				for i = arg_count - 1, 1, -1 do
+					normal[i] = self:pop(frame)
+				end
+				-- combine
+				for _, v in normal do
+					table.insert(f_args, v)
+				end
+				for _, v in varargs do
+					table.insert(f_args, v)
+				end
+			else
+				for i = arg_count, 1, -1 do
+					f_args[i] = self:pop(frame)
+				end
 			end
 			local func = self:pop(frame)
 			if type(func) == "function" then
 				local result = table.pack(func(table.unpack(f_args)))
-				-- only push first return value for normal calls
 				self:push(frame, result[1])
 			elseif type(func) == "table" and func.__type == "function" then
-				local result = self:execute(func.chunk, f_args, func.upvalues)
+				local result = self:execute(func.chunk, f_args, func.upvalues, f_args) -- pass f_args as varargs
 				if result then
 					self:push(frame, result[1])
 				else
@@ -2010,6 +2163,17 @@ function vm:execute(chunk, args, upvalues)
 				end
 			else
 				error(`attempt to call a {type(func)} value`)
+			end
+		elseif op == OPCODES.SET_VARARG_TABLE then
+			local sentinel = self:pop(frame)
+			local count = sentinel.__vararg_count
+			local values = {}
+			for i = count, 1, -1 do
+				values[i] = self:pop(frame)
+			end
+			local tbl = self:peek_stack(frame)
+			for i, v in values do
+				tbl[i] = v
 			end
 		elseif op == OPCODES.CALL_MULTI then
 			frame.ip += 1
@@ -2055,28 +2219,35 @@ function vm:run()
 	return self:execute(self.chunk)
 end
 
+local compiler = __linker_require("src/compiler.lua")
+local lexer = __linker_require("src/lexer.lua")
+local astBuilder = __linker_require("src/parser.lua")
+
+function vm:runSource(source)
+	local tokens = lexer.new(source):run()
+	local ast = astBuilder.new(tokens):run()
+	local compiler = compiler.new()
+	compiler:run(ast)
+
+	compiler:dump(true)
+
+	local vm = vm.new(compiler.chunk)
+	vm:load_stdlib()
+	vm:load_roblox_env()
+	vm:run()
+end
+
 return vm
 
 end
 
 -- [[ entry point: main.lua ]]
 -- Main file is built with ext/Builder.exe
-local lexer = __linker_require("src/lexer.lua")
-local parser = __linker_require("src/parser.lua")
-local compiler = __linker_require("src/compiler.lua")
-local source = __linker_require("tests/allOpcodes.lua")
 local vm = __linker_require("src/vm.lua")
 
-local tokens = lexer.new(source):run()
+vm:runSource([[
+    print("VM Running!")
+]])
 
-local parserObject = parser.new(tokens)
-
-local ast = parserObject:run()
-local compObject = compiler.new()
-
-compObject:run(ast)
-local vmObj = vm.new(compObject.chunk)
-
-vmObj:load_stdlib()
-vmObj:run()
+getgenv().customVM = vm
 

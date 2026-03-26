@@ -59,6 +59,8 @@ local OPNAMES = {
 	-- misc
 	"MOVE", -- copy locals[arg1] into locals[arg2]
 	"VARARG", -- push varargs onto stack
+	"SET_VARARG_TABLE",
+	"VARARG_FIRST",
 }
 
 for i = 1, #OPNAMES do
