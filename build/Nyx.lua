@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 21:52:54
+-- built   : 2026-03-26 22:11:08
 -- entry   : main.lua
 -- inlined : 5 module(s) + entry
 
@@ -2085,6 +2085,7 @@ function vm:load_stdlib()
 	self.globals["assert"] = assert
 	self.globals["unpack"] = table.unpack or unpack
 	self.globals["select"] = select
+	self.globals["debug"] = debug
 	self.globals["pcall"] = pcall
 	self.globals["xpcall"] = xpcall
 	self.globals["tostring"] = tostring
@@ -2728,7 +2729,13 @@ function vm:execute(chunk, args, upvalue_cells)
 				end
 			end
 
-			self:push(frame, make_vm_func(sub_chunk, new_cells))
+			local vmObject = self
+			local executionWrapper = function(...)
+				local res = vmObject:execute(sub_chunk, { ... }, new_cells)
+				return table.unpack(res or {})
+			end
+
+			self:push(frame, executionWrapper)
 		elseif op == OPCODES.CALL then
 			frame.ip += 1
 			local arg_count = frame.chunk.code[frame.ip]

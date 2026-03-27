@@ -8,28 +8,6 @@ do
 	OPNAMES = export.NAMES
 end
 
-local function make_vm_func(chunk, upvalue_cells)
-	local t = {
-		__type = "function",
-		chunk = chunk,
-		upvalue_cells = upvalue_cells,
-	}
-
-	local tAddress = tostring(t):gsub("table: ", "")
-
-	return setmetatable(t, {
-		__pairs = function(_)
-			error("attempt to iterate a function value", 2)
-		end,
-		__iter = function(_)
-			error("attempt to iterate a function value", 2)
-		end,
-		__tostring = function(f)
-			return "function: " .. tAddress
-		end,
-	})
-end
-
 local function is_vm_func(obj)
 	return type(obj) == "table" and rawget(obj, "__type") == "function"
 end
@@ -61,6 +39,7 @@ function vm:load_stdlib()
 	self.globals["assert"] = assert
 	self.globals["unpack"] = table.unpack or unpack
 	self.globals["select"] = select
+	self.globals["debug"] = debug
 	self.globals["pcall"] = pcall
 	self.globals["xpcall"] = xpcall
 	self.globals["tostring"] = tostring
@@ -704,7 +683,13 @@ function vm:execute(chunk, args, upvalue_cells)
 				end
 			end
 
-			self:push(frame, make_vm_func(sub_chunk, new_cells))
+			local vmObject = self
+			local executionWrapper = function(...)
+				local res = vmObject:execute(sub_chunk, { ... }, new_cells)
+				return table.unpack(res or {})
+			end
+
+			self:push(frame, executionWrapper)
 		elseif op == OPCODES.CALL then
 			frame.ip += 1
 			local arg_count = frame.chunk.code[frame.ip]

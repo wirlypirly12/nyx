@@ -3,4 +3,4 @@ src/compiler.lua 13419048673
 src/lexer.lua 13419040836
 src/opcodes.lua 13419040829
 src/parser.lua 13419040816
-src/vm.lua 13419049970
+src/vm.lua 13419051062
