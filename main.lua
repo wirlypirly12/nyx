@@ -1,4 +1,4 @@
-local vm = require("./src/vm")
+local vm = require("./src/interpreter")
 
 vm:runSource([[
     print("VM Running!")
