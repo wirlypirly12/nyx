@@ -8,12 +8,38 @@ do
 	OPNAMES = export.NAMES
 end
 
+local BINARY_OPS
+local UNARY_OPS
+
+BINARY_OPS = {
+	["+"] = OPCODES.ADD,
+	["-"] = OPCODES.SUB,
+	["*"] = OPCODES.MUL,
+	["/"] = OPCODES.DIV,
+	["%"] = OPCODES.MOD,
+	["^"] = OPCODES.POW,
+	["//"] = OPCODES.IDIV,
+	["=="] = OPCODES.EQ,
+	["~="] = OPCODES.NEQ,
+	["<"] = OPCODES.LT,
+	["<="] = OPCODES.LTE,
+	[">"] = OPCODES.GT,
+	[">="] = OPCODES.GTE,
+	[".."] = OPCODES.CONCAT,
+}
+UNARY_OPS = {
+	["-"] = OPCODES.UNM,
+	["not"] = OPCODES.NOT,
+	["#"] = OPCODES.LEN,
+}
+
 function compiler.new(parent)
 	local self = setmetatable({
 		parent = parent,
 		chunk = {
 			code = {},
 			constants = {},
+			constant_index = {},
 			locals = {},
 			num_locals = 0,
 			scope_stack = {},
@@ -47,13 +73,14 @@ function compiler:emit(op, ...)
 end
 
 function compiler:add_constant(value)
-	for i, v in self.chunk.constants do
-		if v == value then
-			return i - 1
-		end
+	local idx = self.chunk.constant_index[value]
+	if idx ~= nil then
+		return idx
 	end
 	table.insert(self.chunk.constants, value)
-	return #self.chunk.constants - 1
+	idx = #self.chunk.constants - 1
+	self.chunk.constant_index[value] = idx
+	return idx
 end
 
 function compiler:add_local(name)
@@ -227,6 +254,12 @@ function compiler:run(node)
 		end,
 		Continue = function(n)
 			self:emit_continue()
+		end,
+		UnrolledFor = function(n)
+			self:unrolled_for(n)
+		end,
+		InlineCall = function(n)
+			self:inline_call(n)
 		end,
 	}
 	local h = handler[node.kind]
@@ -503,23 +536,7 @@ function compiler:binary(node)
 	self:run(node.left)
 	self:run(node.right)
 
-	local ops = {
-		["+"] = OPCODES.ADD,
-		["-"] = OPCODES.SUB,
-		["*"] = OPCODES.MUL,
-		["/"] = OPCODES.DIV,
-		["%"] = OPCODES.MOD,
-		["^"] = OPCODES.POW,
-		["//"] = OPCODES.IDIV,
-		["=="] = OPCODES.EQ,
-		["~="] = OPCODES.NEQ,
-		["<"] = OPCODES.LT,
-		["<="] = OPCODES.LTE,
-		[">"] = OPCODES.GT,
-		[">="] = OPCODES.GTE,
-		[".."] = OPCODES.CONCAT,
-	}
-	local op = ops[node.op]
+	local op = BINARY_OPS[node.op]
 	if not op then
 		error(`unknown operator: {node.op}`)
 	end
@@ -528,8 +545,7 @@ end
 
 function compiler:unary(node)
 	self:run(node.operand)
-	local ops = { ["-"] = OPCODES.UNM, ["not"] = OPCODES.NOT, ["#"] = OPCODES.LEN }
-	local op = ops[node.op]
+	local op = UNARY_OPS[node.op]
 	if not op then
 		error(`unknown unary op: {node.op}`)
 	end
@@ -916,6 +932,42 @@ function compiler:index_access(node)
 	self:run(node.object)
 	self:run(node.index)
 	self:emit(OPCODES.GET_INDEX)
+end
+
+function compiler:unrolled_for(node)
+	for _, iter in node.iterations do
+		self:push_scope()
+
+		local i_reg = self:add_local(node.name)
+		local const_idx = self:add_constant(iter.i_value)
+		self:emit(OPCODES.LOAD_CONST, const_idx)
+		self:emit(OPCODES.STORE_LOCAL, i_reg)
+
+		self:push_loop()
+		self:run(iter.body)
+
+		self:patch_continues(#self.chunk.code + 1)
+
+		local iter_breaks = self:pop_loop()
+
+		if self.break_stack[#self.break_stack] then
+			for _, site in iter_breaks do
+				table.insert(self.break_stack[#self.break_stack], site)
+			end
+		else
+			for _, site in iter_breaks do
+				table.insert(iter_breaks, site)
+			end
+		end
+
+		self:pop_scope()
+	end
+end
+
+function compiler:inline_call(node)
+	self:push_scope()
+	self:run(node.body)
+	self:pop_scope()
 end
 
 function compiler:_break(node)
