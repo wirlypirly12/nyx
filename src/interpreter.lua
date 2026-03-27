@@ -795,18 +795,47 @@ local compiler_mod = require("./compiler")
 local lexer_mod = require("./lexer")
 local parser_mod = require("./parser")
 
-function vm:runSource(source)
+function vm:runSource(source, debug)
+	debug = debug or false
+
+	local startLex = os.clock()
 	local tokens = lexer_mod.new(source):run()
+	local endLex = os.clock()
+
 	local ast = parser_mod.new(tokens):run()
+
+	local endAst = os.clock()
+
 	local comp = compiler_mod.new()
+
 	comp:run(ast)
+
+	local endComp = os.clock()
 
 	local instance = vm.new(comp.chunk)
 	instance:load_stdlib()
 	instance:load_roblox_env()
 
 	instance.globals["_G"] = instance.globals
-	instance:run()
+	local succ, err = pcall(instance.run, instance)
+
+	local endRan = os.clock()
+	if not succ then
+		error(`\ninterpreter raised an error while running\n{err}`)
+	end
+
+	if debug == true then
+		print(
+			string.format(
+				"took %.0f [lexing: %.0f] [parsing: %.0f] [compilation: %.0f] [execution: %.0f] (microseconds)",
+				(endRan - startLex) * 1000000,
+				(endLex - startLex) * 1000000,
+				(endAst - endLex) * 1000000,
+				(endComp - endAst) * 1000000,
+				(endRan - endComp) * 1000000
+			)
+		)
+	end
 end
 
 return vm
