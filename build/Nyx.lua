@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 21:05:21
+-- built   : 2026-03-26 21:52:54
 -- entry   : main.lua
 -- inlined : 5 module(s) + entry
 
@@ -817,9 +817,6 @@ function compiler:numeric_for(node)
 end
 
 function compiler:generic_for(node)
-	table.foreach(node.names, print)
-	table.foreach(node.body, warn)
-
 	self:push_scope()
 	self:push_loop()
 
@@ -2035,24 +2032,26 @@ do
 	OPNAMES = export.NAMES
 end
 
-local VM_FUNC_MT = {
-	__pairs = function(_)
-		error("attempt to iterate a function value", 2)
-	end,
-	__iter = function(_)
-		error("attempt to iterate a function value", 2)
-	end,
-	__tostring = function(f)
-		return "function: 0xIFuckHellaBitches"
-	end,
-}
-
 local function make_vm_func(chunk, upvalue_cells)
-	return setmetatable({
+	local t = {
 		__type = "function",
 		chunk = chunk,
 		upvalue_cells = upvalue_cells,
-	}, VM_FUNC_MT)
+	}
+
+	local tAddress = tostring(t):gsub("table: ", "")
+
+	return setmetatable(t, {
+		__pairs = function(_)
+			error("attempt to iterate a function value", 2)
+		end,
+		__iter = function(_)
+			error("attempt to iterate a function value", 2)
+		end,
+		__tostring = function(f)
+			return "function: " .. tAddress
+		end,
+	})
 end
 
 local function is_vm_func(obj)
