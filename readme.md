@@ -8,6 +8,6 @@ nested functions compile down to protos, assembled at runtime via `CLOSURE`. cap
 
 ## roadmap
 - chunk serializer - bytecode as a binary blob
-- macros - emit functions as real native lua closures, inline, unroll, propagate constants across functions, c style macros
-- compiler optimizations - constant folding, dce, register coalescing
+- macros - emit functions as unvirtualized native lua closures, propagate constants across functions
+- compiler optimizations - dce
 
