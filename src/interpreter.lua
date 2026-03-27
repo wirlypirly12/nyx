@@ -366,6 +366,10 @@ function vm:_set_index(tbl, key, val)
 end
 
 function vm:_arith(a, b, mm_name, native)
+	if type(a) == "number" and type(b) == "number" then
+		return native(a, b)
+	end
+
 	local ok, result = pcall(native, a, b)
 	if ok then
 		return result
@@ -457,309 +461,712 @@ end
 function vm:execute(chunk, args, upvalue_cells)
 	local frame = self:make_frame(chunk, args, upvalue_cells)
 
-	while frame.ip <= #frame.chunk.code do
-		local op = frame.chunk.code[frame.ip]
+	local code = frame.chunk.code
+	local code_len = #code
+	local constants = frame.chunk.constants
+	local locals = frame.locals
+	local local_cells = frame.local_cells
+	local upvalue_cells_l = frame.upvalue_cells
+	local captured_locals = frame.chunk.captured_locals
+	local stack = frame.stack
+	local ip = frame.ip
+	local top = frame.top
+	local varargs = frame.varargs
+	local globals = self.globals
+	local vmself = self
 
-		if op == OPCODES.LOAD_CONST then
-			frame.ip += 1
-			self:push(frame, frame.chunk.constants[frame.chunk.code[frame.ip] + 1])
-		elseif op == OPCODES.LOAD_LOCAL then
-			frame.ip += 1
-			local reg = frame.chunk.code[frame.ip]
-			if frame.local_cells and frame.local_cells[reg] then
-				self:push(frame, frame.local_cells[reg].value)
+	local OP_LOAD_CONST = OPCODES.LOAD_CONST
+	local OP_LOAD_LOCAL = OPCODES.LOAD_LOCAL
+	local OP_STORE_LOCAL = OPCODES.STORE_LOCAL
+	local OP_LOAD_GLOBAL = OPCODES.LOAD_GLOBAL
+	local OP_STORE_GLOBAL = OPCODES.STORE_GLOBAL
+	local OP_LOAD_UPVALUE = OPCODES.LOAD_UPVALUE
+	local OP_STORE_UPVALUE = OPCODES.STORE_UPVALUE
+	local OP_PUSH_NIL = OPCODES.PUSH_NIL
+	local OP_PUSH_TRUE = OPCODES.PUSH_TRUE
+	local OP_PUSH_FALSE = OPCODES.PUSH_FALSE
+	local OP_POP = OPCODES.POP
+	local OP_CALL_MULTI = OPCODES.CALL_MULTI
+	local OP_ADD = OPCODES.ADD
+	local OP_SUB = OPCODES.SUB
+	local OP_MUL = OPCODES.MUL
+	local OP_DIV = OPCODES.DIV
+	local OP_MOD = OPCODES.MOD
+	local OP_POW = OPCODES.POW
+	local OP_IDIV = OPCODES.IDIV
+	local OP_UNM = OPCODES.UNM
+	local OP_CONCAT = OPCODES.CONCAT
+	local OP_AND = OPCODES.AND
+	local OP_OR = OPCODES.OR
+	local OP_NOT = OPCODES.NOT
+	local OP_EQ = OPCODES.EQ
+	local OP_NEQ = OPCODES.NEQ
+	local OP_LT = OPCODES.LT
+	local OP_LTE = OPCODES.LTE
+	local OP_GT = OPCODES.GT
+	local OP_GTE = OPCODES.GTE
+	local OP_LEN = OPCODES.LEN
+	local OP_JUMP = OPCODES.JUMP
+	local OP_JUMP_IF_FALSE = OPCODES.JUMP_IF_FALSE
+	local OP_JUMP_IF_FALSE_KEEP = OPCODES.JUMP_IF_FALSE_KEEP
+	local OP_JUMP_IF_TRUE_KEEP = OPCODES.JUMP_IF_TRUE_KEEP
+	local OP_NEW_TABLE = OPCODES.NEW_TABLE
+	local OP_SET_FIELD = OPCODES.SET_FIELD
+	local OP_GET_FIELD = OPCODES.GET_FIELD
+	local OP_SET_INDEX = OPCODES.SET_INDEX
+	local OP_GET_INDEX = OPCODES.GET_INDEX
+	local OP_CLOSURE = OPCODES.CLOSURE
+	local OP_CALL = OPCODES.CALL
+	local OP_CALL_VOID = OPCODES.CALL_VOID
+	local OP_RETURN = OPCODES.RETURN
+	local OP_MOVE = OPCODES.MOVE
+	local OP_VARARG = OPCODES.VARARG
+	local OP_SET_VARARG_TABLE = OPCODES.SET_VARARG_TABLE
+	local OP_VARARG_FIRST = OPCODES.VARARG_FIRST
+
+	local math_floor = math.floor
+	local tbl_insert = table.insert
+
+	while ip <= code_len do
+		local op = code[ip]
+
+		if op == OP_LOAD_CONST then
+			ip += 1
+			top += 1
+			stack[top] = constants[code[ip] + 1]
+		elseif op == OP_LOAD_LOCAL then
+			ip += 1
+			local reg = code[ip]
+			if local_cells and local_cells[reg] then
+				top += 1
+				stack[top] = local_cells[reg].value
 			else
-				self:push(frame, frame.locals[reg])
+				top += 1
+				stack[top] = locals[reg]
 			end
-		elseif op == OPCODES.STORE_LOCAL then
-			frame.ip += 1
-			local reg = frame.chunk.code[frame.ip]
-			local val = self:pop(frame)
-			frame.locals[reg] = val
-
-			if frame.local_cells and frame.local_cells[reg] then
-				frame.local_cells[reg].value = val
+		elseif op == OP_STORE_LOCAL then
+			ip += 1
+			local reg = code[ip]
+			local val = stack[top]
+			stack[top] = nil
+			top -= 1
+			locals[reg] = val
+			if local_cells and local_cells[reg] then
+				local_cells[reg].value = val
 			end
-		elseif op == OPCODES.LOAD_GLOBAL then
-			frame.ip += 1
-			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
-			self:push(frame, self.globals[name])
-		elseif op == OPCODES.STORE_GLOBAL then
-			frame.ip += 1
-			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
-			self.globals[name] = self:pop(frame)
-		elseif op == OPCODES.LOAD_UPVALUE then
-			frame.ip += 1
-			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
-			local cell = frame.upvalue_cells[name]
-			self:push(frame, cell and cell.value or nil)
-		elseif op == OPCODES.STORE_UPVALUE then
-			frame.ip += 1
-
-			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
-			local cell = frame.upvalue_cells[name]
-
+		elseif op == OP_LOAD_GLOBAL then
+			ip += 1
+			top += 1
+			stack[top] = globals[constants[code[ip] + 1]]
+		elseif op == OP_STORE_GLOBAL then
+			ip += 1
+			globals[constants[code[ip] + 1]] = stack[top]
+			stack[top] = nil
+			top -= 1
+		elseif op == OP_LOAD_UPVALUE then
+			ip += 1
+			local cell = upvalue_cells_l[constants[code[ip] + 1]]
+			top += 1
+			stack[top] = cell and cell.value or nil
+		elseif op == OP_STORE_UPVALUE then
+			ip += 1
+			local name = constants[code[ip] + 1]
+			local cell = upvalue_cells_l[name]
+			local val = stack[top]
+			stack[top] = nil
+			top -= 1
 			if cell then
-				cell.value = self:pop(frame)
+				cell.value = val
 			else
-				frame.upvalue_cells[name] = { value = self:pop(frame) }
+				upvalue_cells_l[name] = { value = val }
 			end
-		elseif op == OPCODES.PUSH_NIL then
-			self:push(frame, nil)
-		elseif op == OPCODES.PUSH_TRUE then
-			self:push(frame, true)
-		elseif op == OPCODES.PUSH_FALSE then
-			self:push(frame, false)
-		elseif op == OPCODES.POP then
-			self:pop(frame)
-		elseif op == OPCODES.ADD then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(
-				frame,
-				self:_arith(a, b, "__add", function(x, y)
+		elseif op == OP_PUSH_NIL then
+			top += 1
+			stack[top] = nil
+		elseif op == OP_PUSH_TRUE then
+			top += 1
+			stack[top] = true
+		elseif op == OP_PUSH_FALSE then
+			top += 1
+			stack[top] = false
+		elseif op == OP_POP then
+			stack[top] = nil
+			top -= 1
+		elseif op == OP_ADD then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a + b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_arith(a, b, "__add", function(x, y)
 					return x + y
 				end)
-			)
-		elseif op == OPCODES.SUB then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(
-				frame,
-				self:_arith(a, b, "__sub", function(x, y)
+			end
+		elseif op == OP_SUB then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a - b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_arith(a, b, "__sub", function(x, y)
 					return x - y
 				end)
-			)
-		elseif op == OPCODES.MUL then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(
-				frame,
-				self:_arith(a, b, "__mul", function(x, y)
+			end
+		elseif op == OP_MUL then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a * b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_arith(a, b, "__mul", function(x, y)
 					return x * y
 				end)
-			)
-		elseif op == OPCODES.DIV then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(
-				frame,
-				self:_arith(a, b, "__div", function(x, y)
+			end
+		elseif op == OP_DIV then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a / b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_arith(a, b, "__div", function(x, y)
 					return x / y
 				end)
-			)
-		elseif op == OPCODES.MOD then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(
-				frame,
-				self:_arith(a, b, "__mod", function(x, y)
+			end
+		elseif op == OP_MOD then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a % b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_arith(a, b, "__mod", function(x, y)
 					return x % y
 				end)
-			)
-		elseif op == OPCODES.IDIV then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(
-				frame,
-				self:_arith(a, b, "__idiv", function(x, y)
-					return math.floor(x / y)
-				end)
-			)
-		elseif op == OPCODES.POW then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(
-				frame,
-				self:_arith(a, b, "__pow", function(x, y)
+			end
+		elseif op == OP_POW then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a ^ b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_arith(a, b, "__pow", function(x, y)
 					return x ^ y
 				end)
-			)
-		elseif op == OPCODES.UNM then
-			local a = self:pop(frame)
-			self:push(
-				frame,
-				self:_unary(a, "__unm", function(x)
+			end
+		elseif op == OP_IDIV then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = math_floor(a / b)
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_arith(a, b, "__idiv", function(x, y)
+					return math_floor(x / y)
+				end)
+			end
+		elseif op == OP_UNM then
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			if type(a) == "number" then
+				top += 1
+				stack[top] = -a
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_unary(a, "__unm", function(x)
 					return -x
 				end)
-			)
-		elseif op == OPCODES.CONCAT then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, self:_concat(a, b))
-		elseif op == OPCODES.LEN then
-			local a = self:pop(frame)
-			self:push(frame, self:_len(a))
-		elseif op == OPCODES.AND then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a and b)
-		elseif op == OPCODES.OR then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, a or b)
-		elseif op == OPCODES.NOT then
-			self:push(frame, not self:pop(frame))
-		elseif op == OPCODES.EQ then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, self:_eq(a, b))
-		elseif op == OPCODES.NEQ then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, not self:_eq(a, b))
-		elseif op == OPCODES.LT then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, self:_lt(a, b))
-		elseif op == OPCODES.LTE then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, self:_le(a, b))
-		elseif op == OPCODES.GT then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, self:_lt(b, a))
-		elseif op == OPCODES.GTE then
-			local b, a = self:pop(frame), self:pop(frame)
-			self:push(frame, self:_le(b, a))
-		elseif op == OPCODES.JUMP then
-			frame.ip += 1
-			frame.ip = frame.chunk.code[frame.ip]
-			continue
-		elseif op == OPCODES.JUMP_IF_FALSE then
-			frame.ip += 1
-			local target = frame.chunk.code[frame.ip]
-			if not self:pop(frame) then
-				frame.ip = target
-				continue
 			end
-		elseif op == OPCODES.JUMP_IF_FALSE_KEEP then
-			frame.ip += 1
-			local target = frame.chunk.code[frame.ip]
-			if not self:peek_stack(frame) then
-				frame.ip = target
-				continue
+		elseif op == OP_CONCAT then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			frame.ip = ip
+			frame.top = top
+			top += 1
+			stack[top] = vmself:_concat(a, b)
+		elseif op == OP_LEN then
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			frame.ip = ip
+			frame.top = top
+			top += 1
+			stack[top] = vmself:_len(a)
+		elseif op == OP_AND then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			top += 1
+			stack[top] = a and b
+		elseif op == OP_OR then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			top += 1
+			stack[top] = a or b
+		elseif op == OP_NOT then
+			stack[top] = not stack[top]
+		elseif op == OP_EQ then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			frame.ip = ip
+			frame.top = top
+			top += 1
+			stack[top] = vmself:_eq(a, b)
+		elseif op == OP_NEQ then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			frame.ip = ip
+			frame.top = top
+			top += 1
+			stack[top] = not vmself:_eq(a, b)
+		elseif op == OP_LT then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a < b
+			elseif ta == "string" and tb == "string" then
+				top += 1
+				stack[top] = a < b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_lt(a, b)
 			end
-		elseif op == OPCODES.JUMP_IF_TRUE_KEEP then
-			frame.ip += 1
-			local target = frame.chunk.code[frame.ip]
-			if self:peek_stack(frame) then
-				frame.ip = target
-				continue
+		elseif op == OP_LTE then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a <= b
+			elseif ta == "string" and tb == "string" then
+				top += 1
+				stack[top] = a <= b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_le(a, b)
 			end
-		elseif op == OPCODES.NEW_TABLE then
-			self:push(frame, {})
-		elseif op == OPCODES.SET_FIELD then
-			frame.ip += 1
-			local key = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
-			local val = self:pop(frame)
-			local tbl = self:peek_stack(frame)
+		elseif op == OP_GT then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a > b
+			elseif ta == "string" and tb == "string" then
+				top += 1
+				stack[top] = a > b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_lt(b, a)
+			end
+		elseif op == OP_GTE then
+			local b = stack[top]
+			stack[top] = nil
+			top -= 1
+			local a = stack[top]
+			stack[top] = nil
+			top -= 1
+			local ta, tb = type(a), type(b)
+			if ta == "number" and tb == "number" then
+				top += 1
+				stack[top] = a >= b
+			elseif ta == "string" and tb == "string" then
+				top += 1
+				stack[top] = a >= b
+			else
+				frame.ip = ip
+				frame.top = top
+				top += 1
+				stack[top] = vmself:_le(b, a)
+			end
+		elseif op == OP_JUMP then
+			ip = code[ip + 1] - 1
+		elseif op == OP_JUMP_IF_FALSE then
+			local target = code[ip + 1]
+			local v = stack[top]
+			stack[top] = nil
+			top -= 1
+			if not v then
+				ip = target - 1
+			else
+				ip += 1
+			end
+		elseif op == OP_JUMP_IF_FALSE_KEEP then
+			local target = code[ip + 1]
+			if not stack[top] then
+				ip = target - 1
+			else
+				ip += 1
+			end
+		elseif op == OP_JUMP_IF_TRUE_KEEP then
+			local target = code[ip + 1]
+			if stack[top] then
+				ip = target - 1
+			else
+				ip += 1
+			end
+		elseif op == OP_NEW_TABLE then
+			top += 1
+			stack[top] = {}
+		elseif op == OP_SET_FIELD then
+			ip += 1
+			local key = constants[code[ip] + 1]
+			local val = stack[top]
+			stack[top] = nil
+			top -= 1
+			local tbl = stack[top]
 			if type(tbl) ~= "table" then
 				error(`attempt to index '{type(tbl)}' value`)
 			end
-			self:_set_index(tbl, key, val)
-		elseif op == OPCODES.GET_FIELD then
-			frame.ip += 1
-			local key = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
-			local tbl = self:pop(frame)
+			frame.ip = ip
+			frame.top = top
+			vmself:_set_index(tbl, key, val)
+		elseif op == OP_GET_FIELD then
+			ip += 1
+			local key = constants[code[ip] + 1]
+			local tbl = stack[top]
+			stack[top] = nil
+			top -= 1
 			if tbl == nil then
 				error(`attempt to index a nil value (field '{key}')`)
 			end
-			if type(tbl) ~= "table" then
-				error(`attempt to index '{type(tbl)}' value`)
+			local ttbl = type(tbl)
+			if ttbl ~= "table" and ttbl ~= "string" then
+				error(`attempt to index '{ttbl}' value`)
 			end
-			self:push(frame, self:_get_index(tbl, key))
-		elseif op == OPCODES.SET_INDEX then
-			local val = self:pop(frame)
-			local key = self:pop(frame)
-			local tbl = self:peek_stack(frame)
-			self:_set_index(tbl, key, val)
-		elseif op == OPCODES.GET_INDEX then
-			local key = self:pop(frame)
-			local tbl = self:pop(frame)
+			frame.ip = ip
+			frame.top = top
+			top += 1
+			stack[top] = vmself:_get_index(tbl, key)
+		elseif op == OP_SET_INDEX then
+			local val = stack[top]
+			stack[top] = nil
+			top -= 1
+			local key = stack[top]
+			stack[top] = nil
+			top -= 1
+			local tbl = stack[top]
+			frame.ip = ip
+			frame.top = top
+			vmself:_set_index(tbl, key, val)
+		elseif op == OP_GET_INDEX then
+			local key = stack[top]
+			stack[top] = nil
+			top -= 1
+			local tbl = stack[top]
+			stack[top] = nil
+			top -= 1
 			if tbl == nil then
 				error(`attempt to index a nil value`)
 			end
-			self:push(frame, self:_get_index(tbl, key))
-		elseif op == OPCODES.VARARG then
-			for _, v in frame.varargs do
-				self:push(frame, v)
+			frame.ip = ip
+			frame.top = top
+			top += 1
+			stack[top] = vmself:_get_index(tbl, key)
+		elseif op == OP_VARARG then
+			for _, v in varargs do
+				top += 1
+				stack[top] = v
 			end
-			self:push(frame, { __vararg_count = #frame.varargs })
-		elseif op == OPCODES.VARARG_FIRST then
-			self:push(frame, frame.varargs[1])
-		elseif op == OPCODES.SET_VARARG_TABLE then
-			local sentinel = self:pop(frame)
+			top += 1
+			stack[top] = { __vararg_count = #varargs }
+		elseif op == OP_VARARG_FIRST then
+			top += 1
+			stack[top] = varargs[1]
+		elseif op == OP_SET_VARARG_TABLE then
+			local sentinel = stack[top]
+			stack[top] = nil
+			top -= 1
 			local count = sentinel.__vararg_count
 			local values = {}
 			for i = count, 1, -1 do
-				values[i] = self:pop(frame)
+				values[i] = stack[top]
+				stack[top] = nil
+				top -= 1
 			end
-			local offset = self:pop(frame)
-			local tbl = self:peek_stack(frame)
+			local offset = stack[top]
+			stack[top] = nil
+			top -= 1
+			local tbl = stack[top]
 			for i, v in values do
 				tbl[offset + i - 1] = v
 			end
-		elseif op == OPCODES.CLOSURE then
-			frame.ip += 1
-			local sub_chunk = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
-
+		elseif op == OP_CLOSURE then
+			ip += 1
+			local sub_chunk = constants[code[ip] + 1]
 			local new_cells = {}
-
 			for name, _ in sub_chunk.upvalue_names do
-				if frame.upvalue_cells[name] then
-					new_cells[name] = frame.upvalue_cells[name]
+				if upvalue_cells_l[name] then
+					new_cells[name] = upvalue_cells_l[name]
 				else
-					local reg = frame.chunk.captured_locals[name]
+					local reg = captured_locals[name]
 					if reg ~= nil then
-						if frame.local_cells and frame.local_cells[reg] then
-							new_cells[name] = frame.local_cells[reg]
+						if local_cells and local_cells[reg] then
+							new_cells[name] = local_cells[reg]
 						else
-							local cell = { value = frame.locals[reg] }
-							if not frame.local_cells then
-								frame.local_cells = {}
+							local cell = { value = locals[reg] }
+							if not local_cells then
+								local_cells = {}
+								frame.local_cells = local_cells
 							end
-							frame.local_cells[reg] = cell
+							local_cells[reg] = cell
 							new_cells[name] = cell
 						end
 					else
-						new_cells[name] = { value = self.globals[name] }
+						new_cells[name] = { value = globals[name] }
 					end
 				end
 			end
-
-			local vmObject = self
-			local executionWrapper = function(...)
-				local res = vmObject:execute(sub_chunk, { ... }, new_cells)
+			local sub = sub_chunk
+			top += 1
+			stack[top] = function(...)
+				local res = vmself:execute(sub, { ... }, new_cells)
 				return table.unpack(res or {})
 			end
+		elseif op == OP_CALL then
+			ip += 1
+			local arg_count = code[ip]
 
-			self:push(frame, executionWrapper)
-		elseif op == OPCODES.CALL then
-			frame.ip += 1
-			local arg_count = frame.chunk.code[frame.ip]
-			local f_args = self:_collect_args(frame, arg_count)
-			local func = self:pop(frame)
-			local results = self:_do_call(func, f_args)
-			self:push(frame, results[1])
-		elseif op == OPCODES.CALL_VOID then
-			frame.ip += 1
-			local arg_count = frame.chunk.code[frame.ip]
-			local f_args = self:_collect_args(frame, arg_count)
-			local func = self:pop(frame)
-			self:_do_call(func, f_args)
-		elseif op == OPCODES.CALL_MULTI then
-			frame.ip += 1
-			local arg_count = frame.chunk.code[frame.ip]
-			frame.ip += 1
-			local expected = frame.chunk.code[frame.ip]
-			local f_args = self:_collect_args(frame, arg_count)
-			local func = self:pop(frame)
-			local results = self:_do_call(func, f_args)
-			for i = 1, expected do
-				self:push(frame, results[i])
+			local f_args = {}
+			local top_val = stack[top]
+			if type(top_val) == "table" and top_val.__vararg_count then
+				stack[top] = nil
+				top -= 1
+				local vc = top_val.__vararg_count
+				local vbuf = {}
+				for i = vc, 1, -1 do
+					vbuf[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
+				local nc = arg_count - 1
+				for i = nc, 1, -1 do
+					f_args[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
+				for _, v in vbuf do
+					tbl_insert(f_args, v)
+				end
+			else
+				for i = arg_count, 1, -1 do
+					f_args[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
 			end
-		elseif op == OPCODES.RETURN then
-			frame.ip += 1
-			local count = frame.chunk.code[frame.ip]
+			local func = stack[top]
+			stack[top] = nil
+			top -= 1
+			frame.ip = ip
+			frame.top = top
+			local results = vmself:_do_call(func, f_args)
+			top += 1
+			stack[top] = results[1]
+		elseif op == OP_CALL_VOID then
+			ip += 1
+			local arg_count = code[ip]
+			local f_args = {}
+			local top_val = stack[top]
+			if type(top_val) == "table" and top_val.__vararg_count then
+				stack[top] = nil
+				top -= 1
+				local vc = top_val.__vararg_count
+				local vbuf = {}
+				for i = vc, 1, -1 do
+					vbuf[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
+				local nc = arg_count - 1
+				for i = nc, 1, -1 do
+					f_args[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
+				for _, v in vbuf do
+					tbl_insert(f_args, v)
+				end
+			else
+				for i = arg_count, 1, -1 do
+					f_args[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
+			end
+			local func = stack[top]
+			stack[top] = nil
+			top -= 1
+			frame.ip = ip
+			frame.top = top
+			vmself:_do_call(func, f_args)
+		elseif op == OP_CALL_MULTI then
+			ip += 1
+			local arg_count = code[ip]
+			ip += 1
+			local expected = code[ip]
+			local f_args = {}
+			local top_val = stack[top]
+			if type(top_val) == "table" and top_val.__vararg_count then
+				stack[top] = nil
+				top -= 1
+				local vc = top_val.__vararg_count
+				local vbuf = {}
+				for i = vc, 1, -1 do
+					vbuf[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
+				local nc = arg_count - 1
+				for i = nc, 1, -1 do
+					f_args[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
+				for _, v in vbuf do
+					tbl_insert(f_args, v)
+				end
+			else
+				for i = arg_count, 1, -1 do
+					f_args[i] = stack[top]
+					stack[top] = nil
+					top -= 1
+				end
+			end
+			local func = stack[top]
+			stack[top] = nil
+			top -= 1
+			frame.ip = ip
+			frame.top = top
+			local results = vmself:_do_call(func, f_args)
+			for i = 1, expected do
+				top += 1
+				stack[top] = results[i]
+			end
+		elseif op == OP_RETURN then
+			ip += 1
+			local count = code[ip]
 			local results = {}
 			for i = count, 1, -1 do
-				results[i] = self:pop(frame)
+				results[i] = stack[top]
+				stack[top] = nil
+				top -= 1
 			end
+			frame.ip = ip
+			frame.top = top
 			return results
+		elseif op == OP_MOVE then
 		else
-			error(`unknown opcode: {op} ({OPNAMES[op] or "?"}) at ip={frame.ip}`)
+			error(`unknown opcode: {op} ({OPNAMES[op] or "?"}) at ip={ip}`)
 		end
 
-		frame.ip += 1
+		ip += 1
 	end
 
+	frame.ip = ip
+	frame.top = top
 	return nil
 end
 
@@ -800,9 +1207,10 @@ end
 local compiler_mod = require("./compiler")
 local lexer_mod = require("./lexer")
 local parser_mod = require("./parser")
+local macros = require("./macros")
 
 function vm:runSource(source, debug)
-	debug = debug or false
+	debug = debug or {}
 
 	local startLex = os.clock()
 	local tokens = lexer_mod.new(source):run()
@@ -811,6 +1219,10 @@ function vm:runSource(source, debug)
 	local ast = parser_mod.new(tokens):run()
 
 	local endAst = os.clock()
+
+	ast = macros.expand(ast, lexer_mod, parser_mod)
+
+	local endMacros = os.clock()
 
 	local comp = compiler_mod.new()
 
@@ -832,15 +1244,17 @@ function vm:runSource(source, debug)
 		end
 		error(err, 2)
 	end
-
-	if debug == true then
+	if debug.b == true then
+		comp:dump(false)
+	end
+	if debug.m == true then
 		print(
 			string.format(
 				"took %.0f [lexing: %.0f] [parsing: %.0f] [compilation: %.0f] [execution: %.0f] (microseconds)",
 				(endRan - startLex) * 1000000,
-				(endLex - startLex) * 1000000,
 				(endAst - endLex) * 1000000,
-				(endComp - endAst) * 1000000,
+				(endMacros - endAst) * 1000000,
+				(endComp - endMacros) * 1000000,
 				(endRan - endComp) * 1000000
 			)
 		)
