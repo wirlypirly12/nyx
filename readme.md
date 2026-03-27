@@ -10,4 +10,4 @@ nested functions compile down to protos, assembled at runtime via `CLOSURE`. cap
 - chunk serializer - bytecode as a binary blob
 - macros - emit functions as unvirtualized native lua closures, propagate constants across functions
 - compiler optimizations - dce
-
+- parsing fixes - full luau support
