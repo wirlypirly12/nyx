@@ -7,11 +7,6 @@ do
 	OPCODES = export.CODES
 	OPNAMES = export.NAMES
 end
-
-local function is_vm_func(obj)
-	return type(obj) == "table" and rawget(obj, "__type") == "function"
-end
-
 function vm.new(chunk)
 	local self = setmetatable({
 		chunk = chunk,
@@ -24,17 +19,11 @@ function vm:load_stdlib()
 	self.globals["print"] = print
 
 	self.globals["tonumber"] = tonumber
-	self.globals["type"] = function(what)
-		if is_vm_func(what) then
-			return "function"
-		end
-		local realType = type(what)
-		if realType == "table" and rawget(what, "__type") then
-			return rawget(what, "__type")
-		end
-		return realType
-	end
-	self.globals["typeof"] = typeof or type
+	self.globals["typeof"] = typeof
+	self.globals["type"] = type
+	self.globals["pairs"] = pairs
+	self.globals["ipairs"] = ipairs
+	self.globals["next"] = next
 	self.globals["error"] = error
 	self.globals["assert"] = assert
 	self.globals["unpack"] = table.unpack or unpack
@@ -43,24 +32,6 @@ function vm:load_stdlib()
 	self.globals["pcall"] = pcall
 	self.globals["xpcall"] = xpcall
 	self.globals["tostring"] = tostring
-	self.globals["pairs"] = function(t)
-		if is_vm_func(t) then
-			error("bad argument #1 to 'pairs' (table expected, got function)", 2)
-		end
-		return pairs(t)
-	end
-	self.globals["ipairs"] = function(t)
-		if is_vm_func(t) then
-			error("bad argument #1 to 'ipairs' (table expected, got function)", 2)
-		end
-		return ipairs(t)
-	end
-	self.globals["next"] = function(t, k)
-		if is_vm_func(t) then
-			error("bad argument #1 to 'next' (table expected, got function)", 2)
-		end
-		return next(t, k)
-	end
 	self.globals["rawget"] = rawget
 	self.globals["rawset"] = rawset
 	self.globals["rawequal"] = rawequal
@@ -270,16 +241,12 @@ end
 function vm:_do_call(func, f_args)
 	if type(func) == "function" then
 		return table.pack(func(table.unpack(f_args)))
-	elseif is_vm_func(func) then
-		local res = self:execute(func.chunk, f_args, func.upvalue_cells)
-		return res or {}
 	elseif type(func) == "table" or type(func) == "userdata" then
 		local mt = getmetatable(func)
 		if mt then
 			local mm = rawget(mt, "__call")
 			if mm then
-				local args2 = { func, table.unpack(f_args) }
-				return self:_do_call(mm, args2)
+				return self:_do_call(mm, { func, table.unpack(f_args) })
 			end
 		end
 		error(`attempt to call a {type(func)} value`)
