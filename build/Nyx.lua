@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 22:58:22
+-- built   : 2026-03-26 23:09:32
 -- entry   : main.lua
 -- inlined : 5 module(s) + entry
 
@@ -118,7 +118,7 @@ function compiler.new(parent)
 			num_locals = 0,
 			scope_stack = {},
 			upvalue_names = {},
-			captured_locals = {}, -- name -> reg, for any local captured by a child closure
+			captured_locals = {},
 		},
 		break_stack = {},
 		continue_stack = {},
@@ -171,7 +171,6 @@ function compiler:get_local(name)
 	return self.chunk.locals[name]
 end
 
--- Mark a name as captured in all ancestors up to and including `stop`.
 function compiler:_mark_captured(name, stop)
 	local q = self
 	while q do
@@ -375,7 +374,7 @@ function compiler:identifier(node)
 	while p do
 		if p:get_local(node.name) ~= nil then
 			self.chunk.upvalue_names[node.name] = true
-			-- mark captured in every ancestor up to where it lives
+
 			self.parent:_mark_captured(node.name, p)
 			local idx = self:add_constant(node.name)
 			self:emit(OPCODES.LOAD_UPVALUE, idx)
@@ -567,12 +566,8 @@ function compiler:_store_target(target)
 				p = p.parent
 			end
 			if found_at then
-				-- mark captured in every ancestor up to where it lives
 				self.parent:_mark_captured(target.name, found_at)
-				-- Register in upvalue_names so the CLOSURE handler in the parent
-				-- wires up a shared cell for this name. Without this, write-only
-				-- upvalues (never read inside the closure) are invisible to CLOSURE
-				-- and the write goes into a disconnected cell the parent never sees.
+
 				self.chunk.upvalue_names[target.name] = true
 				local idx = self:add_constant(target.name)
 				self:emit(OPCODES.STORE_UPVALUE, idx)
@@ -946,13 +941,13 @@ function compiler:_table(node)
 			self:run(field.value)
 			local idx = self:add_constant(field.key)
 			self:emit(OPCODES.SET_FIELD, idx)
-			self:emit(OPCODES.POP) -- SET_FIELD leaves tbl on stack; discard it
+			self:emit(OPCODES.POP)
 		elseif field.kind == "IndexedField" then
 			self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
 			self:run(field.key)
 			self:run(field.value)
 			self:emit(OPCODES.SET_INDEX)
-			self:emit(OPCODES.POP) -- SET_INDEX leaves tbl on stack; discard it
+			self:emit(OPCODES.POP)
 		elseif field.kind == "ValueField" then
 			if field.value.kind == "Identifier" and field.value.name == "..." then
 				self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
@@ -2062,7 +2057,7 @@ function vm.new(chunk)
 	local self = setmetatable({
 		chunk = chunk,
 		globals = {},
-		metatables = {}, -- [table] = metatable, owned entirely by the VM
+		metatables = {},
 	}, vm)
 	return self
 end
@@ -2094,14 +2089,13 @@ function vm:load_stdlib()
 	self.globals["getmetatable"] = function(tbl)
 		local mt = vm_ref.metatables[tbl]
 		if mt ~= nil then
-			-- honour __metatable field
 			local guard = rawget(mt, "__metatable")
 			if guard ~= nil then
 				return guard
 			end
 			return mt
 		end
-		-- fallback for native Roblox objects
+
 		return getmetatable(tbl)
 	end
 	self.globals["rawget"] = rawget
@@ -2226,6 +2220,11 @@ function vm:load_roblox_env()
 		return vm_globals
 	end
 
+	self.globals["getrawmetatable"] = getrawmetatable
+	self.globals["syn"] = syn
+	self.globals["getnamecallmethod"] = getnamecallmethod
+	self.globals["checkcaller"] = checkcaller
+
 	self.globals["Instance"] = Instance
 	self.globals["Vector3"] = Vector3
 	self.globals["Vector2"] = Vector2
@@ -2289,9 +2288,6 @@ function vm:make_frame(chunk, args, upvalue_cells)
 		end
 	end
 
-	-- AFTER args are loaded, pre-create cells for any locals captured by child closures.
-	-- Use captured_locals (compiler-preserved reg map) rather than chunk.locals, which
-	-- gets mutated by pop_scope and will be nil for locals defined in inner scopes.
 	for name, reg in chunk.captured_locals do
 		if not frame.local_cells[reg] then
 			frame.local_cells[reg] = { value = frame.locals[reg] }
@@ -2321,21 +2317,19 @@ function vm:_do_call(func, f_args)
 	if type(func) == "function" then
 		return table.pack(func(table.unpack(f_args)))
 	elseif type(func) == "table" then
-		-- Use VM metatable registry for __call
 		local mm = self:_get_metafield(func, "__call")
 		if mm then
 			return self:_do_call(mm, { func, table.unpack(f_args) })
 		end
 		error(`attempt to call a table value`)
 	elseif type(func) == "userdata" then
-		-- Roblox userdata: try native call (e.g. CFrame, Vector3 constructors)
 		local ok, result = pcall(function()
 			return table.pack(func(table.unpack(f_args)))
 		end)
 		if ok then
 			return result
 		end
-		-- Also check native metatable for __call
+
 		local nmt = getmetatable(func)
 		if nmt then
 			local mm = rawget(nmt, "__call")
@@ -2348,11 +2342,6 @@ function vm:_do_call(func, f_args)
 		error(`attempt to call a {type(func)} value`)
 	end
 end
-
--- ── Custom VM metatable system ──────────────────────────────────────────────
--- Metatables are stored in self.metatables (a plain Lua table keyed by the
--- VM table object). This bypasses native getmetatable/setmetatable entirely,
--- avoiding rawget edge-cases and Roblox locked-metatable issues.
 
 function vm:_get_mt(obj)
 	if type(obj) == "string" then
@@ -2374,7 +2363,6 @@ function vm:_get_index(tbl, key)
 		return string[key]
 	end
 
-	-- Non-table (Roblox userdata, Instances, etc): use native indexing directly.
 	if type(tbl) ~= "table" then
 		local ok, val = pcall(function()
 			return tbl[key]
@@ -2748,9 +2736,6 @@ function vm:execute(chunk, args, upvalue_cells)
 				if frame.upvalue_cells[name] then
 					new_cells[name] = frame.upvalue_cells[name]
 				else
-					-- Use captured_locals for the reg lookup: chunk.locals is mutated by
-					-- pop_scope and returns nil for locals from inner scopes, breaking
-					-- the shared-cell link needed for upvalue writes to propagate back.
 					local reg = frame.chunk.captured_locals[name]
 					if reg ~= nil then
 						if frame.local_cells and frame.local_cells[reg] then
