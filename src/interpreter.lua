@@ -362,7 +362,12 @@ function vm:_set_index(tbl, key, val)
 			end
 		end
 	end
-	rawset(tbl, key, val)
+
+	if type(tbl) == "table" then
+		rawset(tbl, key, val)
+	else
+		tbl[key] = val
+	end
 end
 
 function vm:_arith(a, b, mm_name, native)
@@ -917,8 +922,9 @@ function vm:execute(chunk, args, upvalue_cells)
 			stack[top] = nil
 			top -= 1
 			local tbl = stack[top]
-			if type(tbl) ~= "table" then
-				error(`attempt to index '{type(tbl)}' value`)
+			local tbl_type = type(tbl)
+			if tbl_type ~= "table" and tbl_type ~= "userdata" then
+				error(`attempt to newindex '{type(tbl)}' value`)
 			end
 			frame.ip = ip
 			frame.top = top
@@ -933,7 +939,7 @@ function vm:execute(chunk, args, upvalue_cells)
 				error(`attempt to index a nil value (field '{key}')`)
 			end
 			local ttbl = type(tbl)
-			if ttbl ~= "table" and ttbl ~= "string" then
+			if ttbl ~= "table" and ttbl ~= "string" and ttbl ~= "userdata" then
 				error(`attempt to index '{ttbl}' value`)
 			end
 			frame.ip = ip
