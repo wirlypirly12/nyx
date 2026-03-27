@@ -1,6 +1,7 @@
 main.lua 13419052408
-src/compiler.lua 13419054068
-src/interpreter.lua 13419057523
-src/lexer.lua 13419040836
+src/compiler.lua 13419124508
+src/interpreter.lua 13419124989
+src/lexer.lua 13419122835
+src/macros.lua 13419123942
 src/opcodes.lua 13419040829
-src/parser.lua 13419040816
+src/parser.lua 13419123502
