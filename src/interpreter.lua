@@ -174,6 +174,11 @@ function vm:load_roblox_env()
 		return vm_globals
 	end
 
+	self.globals["getrawmetatable"] = getrawmetatable
+	self.globals["syn"] = syn
+	self.globals["getnamecallmethod"] = getnamecallmethod
+	self.globals["checkcaller"] = checkcaller
+
 	self.globals["Instance"] = Instance
 	self.globals["Vector3"] = Vector3
 	self.globals["Vector2"] = Vector2
