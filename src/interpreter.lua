@@ -11,6 +11,7 @@ function vm.new(chunk)
 	local self = setmetatable({
 		chunk = chunk,
 		globals = {},
+		metatables = {},
 	}, vm)
 	return self
 end
@@ -32,12 +33,27 @@ function vm:load_stdlib()
 	self.globals["pcall"] = pcall
 	self.globals["xpcall"] = xpcall
 	self.globals["tostring"] = tostring
-	self.globals["rawget"] = rawget
-	self.globals["rawset"] = rawset
 	self.globals["rawequal"] = rawequal
 	self.globals["rawlen"] = rawlen
-	self.globals["setmetatable"] = setmetatable
-	self.globals["getmetatable"] = getmetatable
+	local vm_ref = self
+	self.globals["setmetatable"] = function(tbl, mt)
+		vm_ref.metatables[tbl] = mt
+		return tbl
+	end
+	self.globals["getmetatable"] = function(tbl)
+		local mt = vm_ref.metatables[tbl]
+		if mt ~= nil then
+			local guard = rawget(mt, "__metatable")
+			if guard ~= nil then
+				return guard
+			end
+			return mt
+		end
+
+		return getmetatable(tbl)
+	end
+	self.globals["rawget"] = rawget
+	self.globals["rawset"] = rawset
 	self.globals["loadstring"] = loadstring
 	self.globals["collectgarbage"] = collectgarbage
 	self.globals["warn"] = warn or print
@@ -205,10 +221,11 @@ function vm:make_frame(chunk, args, upvalue_cells)
 		locals = {},
 		stack = {},
 		top = 0,
-
 		upvalue_cells = upvalue_cells or {},
 		varargs = {},
+		local_cells = {},
 	}
+
 	if args then
 		local num_params = chunk.num_params or 0
 		for i, v in args do
@@ -219,6 +236,13 @@ function vm:make_frame(chunk, args, upvalue_cells)
 			end
 		end
 	end
+
+	for name, reg in chunk.captured_locals do
+		if not frame.local_cells[reg] then
+			frame.local_cells[reg] = { value = frame.locals[reg] }
+		end
+	end
+
 	return frame
 end
 
@@ -241,29 +265,42 @@ end
 function vm:_do_call(func, f_args)
 	if type(func) == "function" then
 		return table.pack(func(table.unpack(f_args)))
-	elseif type(func) == "table" or type(func) == "userdata" then
-		local mt = getmetatable(func)
-		if mt then
-			local mm = rawget(mt, "__call")
+	elseif type(func) == "table" then
+		local mm = self:_get_metafield(func, "__call")
+		if mm then
+			return self:_do_call(mm, { func, table.unpack(f_args) })
+		end
+		error(`attempt to call a table value`)
+	elseif type(func) == "userdata" then
+		local ok, result = pcall(function()
+			return table.pack(func(table.unpack(f_args)))
+		end)
+		if ok then
+			return result
+		end
+
+		local nmt = getmetatable(func)
+		if nmt then
+			local mm = rawget(nmt, "__call")
 			if mm then
 				return self:_do_call(mm, { func, table.unpack(f_args) })
 			end
 		end
-		error(`attempt to call a {type(func)} value`)
+		error(`attempt to call a userdata value`)
 	else
 		error(`attempt to call a {type(func)} value`)
 	end
 end
 
-local STRING_METATABLE = { __index = string }
+function vm:_get_mt(obj)
+	if type(obj) == "string" then
+		return { __index = string }
+	end
+	return self.metatables[obj]
+end
 
 function vm:_get_metafield(obj, name)
-	local mt
-	if type(obj) == "string" then
-		mt = STRING_METATABLE
-	else
-		mt = getmetatable(obj)
-	end
+	local mt = self:_get_mt(obj)
 	if mt == nil then
 		return nil
 	end
@@ -271,39 +308,48 @@ function vm:_get_metafield(obj, name)
 end
 
 function vm:_get_index(tbl, key)
-	local raw
 	if type(tbl) == "string" then
 		return string[key]
 	end
-	raw = rawget(tbl, key)
+
+	if type(tbl) ~= "table" then
+		local ok, val = pcall(function()
+			return tbl[key]
+		end)
+		return ok and val or nil
+	end
+
+	local raw = rawget(tbl, key)
 	if raw ~= nil then
 		return raw
 	end
 
-	local mt = getmetatable(tbl)
+	local mt = self.metatables[tbl]
 	if mt == nil then
 		return nil
 	end
+
 	local index = rawget(mt, "__index")
 	if index == nil then
 		return nil
 	end
-	if type(index) == "function" then
-		local res = table.pack(index(tbl, key))
-		return res[1]
-	elseif type(index) == "table" or type(index) == "userdata" then
+
+	local itype = type(index)
+	if itype == "function" then
+		return (self:_do_call(index, { tbl, key }))[1]
+	elseif itype == "table" then
 		return self:_get_index(index, key)
 	end
 	return nil
 end
 
 function vm:_set_index(tbl, key, val)
-	local mt = getmetatable(tbl)
-	if mt and rawget(tbl, key) == nil then
+	local mt = self.metatables[tbl]
+	if mt ~= nil and rawget(tbl, key) == nil then
 		local ni = rawget(mt, "__newindex")
-		if ni then
+		if ni ~= nil then
 			if type(ni) == "function" then
-				ni(tbl, key, val)
+				self:_do_call(ni, { tbl, key, val })
 				return
 			elseif type(ni) == "table" then
 				self:_set_index(ni, key, val)
@@ -414,7 +460,12 @@ function vm:execute(chunk, args, upvalue_cells)
 			self:push(frame, frame.chunk.constants[frame.chunk.code[frame.ip] + 1])
 		elseif op == OPCODES.LOAD_LOCAL then
 			frame.ip += 1
-			self:push(frame, frame.locals[frame.chunk.code[frame.ip]])
+			local reg = frame.chunk.code[frame.ip]
+			if frame.local_cells and frame.local_cells[reg] then
+				self:push(frame, frame.local_cells[reg].value)
+			else
+				self:push(frame, frame.locals[reg])
+			end
 		elseif op == OPCODES.STORE_LOCAL then
 			frame.ip += 1
 			local reg = frame.chunk.code[frame.ip]
@@ -439,8 +490,10 @@ function vm:execute(chunk, args, upvalue_cells)
 			self:push(frame, cell and cell.value or nil)
 		elseif op == OPCODES.STORE_UPVALUE then
 			frame.ip += 1
+
 			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
 			local cell = frame.upvalue_cells[name]
+
 			if cell then
 				cell.value = self:pop(frame)
 			else
@@ -632,7 +685,7 @@ function vm:execute(chunk, args, upvalue_cells)
 				if frame.upvalue_cells[name] then
 					new_cells[name] = frame.upvalue_cells[name]
 				else
-					local reg = frame.chunk.locals[name]
+					local reg = frame.chunk.captured_locals[name]
 					if reg ~= nil then
 						if frame.local_cells and frame.local_cells[reg] then
 							new_cells[name] = frame.local_cells[reg]
