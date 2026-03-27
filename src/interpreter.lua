@@ -640,6 +640,9 @@ function vm:execute(chunk, args, upvalue_cells)
 			local key = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
 			local val = self:pop(frame)
 			local tbl = self:peek_stack(frame)
+			if type(tbl) ~= "table" then
+				error(`attempt to index '{type(tbl)}' value`)
+			end
 			self:_set_index(tbl, key, val)
 		elseif op == OPCODES.GET_FIELD then
 			frame.ip += 1
@@ -647,6 +650,9 @@ function vm:execute(chunk, args, upvalue_cells)
 			local tbl = self:pop(frame)
 			if tbl == nil then
 				error(`attempt to index a nil value (field '{key}')`)
+			end
+			if type(tbl) ~= "table" then
+				error(`attempt to index '{type(tbl)}' value`)
 			end
 			self:push(frame, self:_get_index(tbl, key))
 		elseif op == OPCODES.SET_INDEX then
@@ -821,7 +827,10 @@ function vm:runSource(source, debug)
 
 	local endRan = os.clock()
 	if not succ then
-		error(`\ninterpreter raised an error while running\n{err}`)
+		if debug then
+			error(err)
+		end
+		error(err, 2)
 	end
 
 	if debug == true then
