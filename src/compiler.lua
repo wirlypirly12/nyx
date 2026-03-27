@@ -18,6 +18,7 @@ function compiler.new(parent)
 			num_locals = 0,
 			scope_stack = {},
 			upvalue_names = {},
+			captured_locals = {},
 		},
 		break_stack = {},
 		continue_stack = {},
@@ -68,6 +69,20 @@ end
 
 function compiler:get_local(name)
 	return self.chunk.locals[name]
+end
+
+function compiler:_mark_captured(name, stop)
+	local q = self
+	while q do
+		local reg = q:get_local(name)
+		if reg ~= nil then
+			q.chunk.captured_locals[name] = reg
+		end
+		if q == stop then
+			break
+		end
+		q = q.parent
+	end
 end
 
 function compiler:push_loop()
@@ -259,6 +274,8 @@ function compiler:identifier(node)
 	while p do
 		if p:get_local(node.name) ~= nil then
 			self.chunk.upvalue_names[node.name] = true
+
+			self.parent:_mark_captured(node.name, p)
 			local idx = self:add_constant(node.name)
 			self:emit(OPCODES.LOAD_UPVALUE, idx)
 			return
@@ -439,16 +456,19 @@ function compiler:_store_target(target)
 		if reg ~= nil then
 			self:emit(OPCODES.STORE_LOCAL, reg)
 		else
-			local is_upval = false
+			local found_at = nil
 			local p = self.parent
 			while p do
 				if p:get_local(target.name) ~= nil then
-					is_upval = true
+					found_at = p
 					break
 				end
 				p = p.parent
 			end
-			if is_upval then
+			if found_at then
+				self.parent:_mark_captured(target.name, found_at)
+
+				self.chunk.upvalue_names[target.name] = true
 				local idx = self:add_constant(target.name)
 				self:emit(OPCODES.STORE_UPVALUE, idx)
 			else
@@ -821,11 +841,13 @@ function compiler:_table(node)
 			self:run(field.value)
 			local idx = self:add_constant(field.key)
 			self:emit(OPCODES.SET_FIELD, idx)
+			self:emit(OPCODES.POP)
 		elseif field.kind == "IndexedField" then
 			self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
 			self:run(field.key)
 			self:run(field.value)
 			self:emit(OPCODES.SET_INDEX)
+			self:emit(OPCODES.POP)
 		elseif field.kind == "ValueField" then
 			if field.value.kind == "Identifier" and field.value.name == "..." then
 				self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
