@@ -8,6 +8,7 @@ local TOKEN_TYPES = {
 	NUMBER = "NUMBER",
 	OPERATOR = "OPERATOR",
 	SYMBOL = "SYMBOL",
+	ATTRIBUTE = "ATTRIBUTE",
 	EOF = "EOF",
 }
 
@@ -294,6 +295,26 @@ function lexer:identifier()
 	end
 end
 
+function lexer:attribute()
+	local line = self.line
+	local col = self.column
+	self:advance()
+	if not self.char or not self.char:match("[%a_]") then
+		error(`expected attribute name after '@' at line {line} col {col}`)
+	end
+	local result = {}
+	while self.char and self.char:match("[%a%d_]") do
+		table.insert(result, self.char)
+		self:advance()
+	end
+	table.insert(self.tokens, {
+		type = TOKEN_TYPES.ATTRIBUTE,
+		value = table.concat(result),
+		line = line,
+		column = col,
+	})
+end
+
 function lexer:operator()
 	local c = self.char
 	local p = self:peek()
@@ -373,6 +394,8 @@ function lexer:run()
 
 		if self.char == "-" and self:peek() == "-" then
 			self:skip_comment()
+		elseif self.char == "@" then
+			self:attribute()
 		elseif self.char == '"' or self.char == "'" then
 			self:string()
 		elseif self.char == "[" and (self:peek() == "[" or self:peek() == "=") then

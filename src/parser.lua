@@ -18,6 +18,17 @@ local BINARY_PRECEDENCE = {
 }
 local RIGHT_ASSOC = { ["^"] = true, [".."] = true }
 
+local VALID_ATTRIBUTES = {
+	unroll = { targets = { NumericFor = true }, arg = "number" },
+	inline = { targets = { LocalFunction = true, FunctionStatement = true }, arg = "none" },
+	cold = { targets = { LocalFunction = true, FunctionStatement = true }, arg = "none" },
+	const = { targets = { LocalStatement = true, __directive = true }, arg = "none" },
+	define = { targets = { __directive = true }, arg = "macro" },
+	memoize = { targets = { LocalFunction = true, FunctionStatement = true }, arg = "none" },
+	likely = { targets = { IfStatement = true }, arg = "none" },
+	unlikely = { targets = { IfStatement = true }, arg = "none" },
+}
+
 local parser = {}
 parser.__index = parser
 
@@ -55,6 +66,92 @@ function parser:expect(type, value)
 		error(`expected {value or type} but got '{t.value}' at line {t.line}`)
 	end
 	return self:advance()
+end
+
+function parser:parse_attributes()
+	local attrs = {}
+	while self:peek().type == "ATTRIBUTE" do
+		local tok = self:advance()
+		local name = tok.value
+		local line = tok.line
+
+		if name == "const" then
+			local const_name = self:expect("IDENTIFIER").value
+			self:expect("OPERATOR", "=")
+			local value = self:parse_expression()
+			return nil,
+				{
+					kind = "LocalStatement",
+					names = { const_name },
+					values = { value },
+					attributes = { { name = "const", line = line } },
+				}
+		end
+
+		if name == "define" then
+			local macro_name = self:expect("IDENTIFIER").value
+			local params = {}
+			if self:peek().value == "(" then
+				self:advance()
+				if self:peek().value ~= ")" then
+					table.insert(params, self:expect("IDENTIFIER").value)
+					while self:match("SYMBOL", ",") do
+						table.insert(params, self:expect("IDENTIFIER").value)
+					end
+				end
+				self:expect("SYMBOL", ")")
+			end
+			local body_tokens = {}
+			local def_line = self:peek().line
+			while self:peek().type ~= "EOF" and self:peek().line == def_line do
+				table.insert(body_tokens, self:advance())
+			end
+			return nil,
+				{
+					kind = "DefineDirective",
+					name = macro_name,
+					params = params,
+					body_tokens = body_tokens,
+					line = line,
+				}
+		end
+
+		if not VALID_ATTRIBUTES[name] then
+			local hint = ""
+			for k in VALID_ATTRIBUTES do
+				if k:sub(1, #name) == name or name:sub(1, #k) == k then
+					hint = ` (did you mean '@{k}'?)`
+					break
+				end
+			end
+			error(`unknown attribute '@{name}' at line {line}{hint}`)
+		end
+
+		table.insert(attrs, { name = name, line = line })
+	end
+	return attrs, nil
+end
+
+function parser:attach_attributes(node, attrs)
+	if not attrs or #attrs == 0 then
+		node.attributes = {}
+		return node
+	end
+	for _, attr in attrs do
+		local info = VALID_ATTRIBUTES[attr.name]
+		if not info.targets[node.kind] then
+			local valid_list = {}
+			for k in info.targets do
+				table.insert(valid_list, k)
+			end
+			error(
+				`'@{attr.name}' cannot be applied to '{node.kind}' at line {attr.line} `
+					.. `(valid targets: {table.concat(valid_list, ", ")})`
+			)
+		end
+	end
+	node.attributes = attrs
+	return node
 end
 
 function parser:parse_local()
@@ -452,34 +549,45 @@ function parser:parse_expression(min_prec)
 end
 
 function parser:parse_statement()
+	local attrs, directive = self:parse_attributes()
+	if directive then
+		return directive
+	end
+
 	local t = self:peek()
+	local node
 
 	if t.type == "KEYWORD" then
 		if t.value == "local" then
-			return self:parse_local()
+			node = self:parse_local()
 		elseif t.value == "if" then
-			return self:parse_if()
+			node = self:parse_if()
 		elseif t.value == "while" then
-			return self:parse_while()
+			node = self:parse_while()
 		elseif t.value == "for" then
-			return self:parse_for()
+			node = self:parse_for()
 		elseif t.value == "return" then
-			return self:parse_return()
+			node = self:parse_return()
 		elseif t.value == "function" then
-			return self:parse_function()
+			node = self:parse_function()
 		elseif t.value == "do" then
-			return self:parse_do()
+			node = self:parse_do()
 		elseif t.value == "repeat" then
-			return self:parse_repeat()
+			node = self:parse_repeat()
 		elseif t.value == "break" then
 			self:advance()
-			return { kind = "Break" }
+			node = { kind = "Break" }
 		elseif t.value == "continue" then
 			self:advance()
-			return { kind = "Continue" }
+			node = { kind = "Continue" }
 		end
 	end
-	return self:parse_expression_statement()
+
+	if not node then
+		node = self:parse_expression_statement()
+	end
+
+	return self:attach_attributes(node, attrs)
 end
 
 function parser:run()
