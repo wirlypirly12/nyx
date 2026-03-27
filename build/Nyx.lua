@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 22:11:08
+-- built   : 2026-03-26 22:58:22
 -- entry   : main.lua
 -- inlined : 5 module(s) + entry
 
@@ -118,6 +118,7 @@ function compiler.new(parent)
 			num_locals = 0,
 			scope_stack = {},
 			upvalue_names = {},
+			captured_locals = {}, -- name -> reg, for any local captured by a child closure
 		},
 		break_stack = {},
 		continue_stack = {},
@@ -168,6 +169,21 @@ end
 
 function compiler:get_local(name)
 	return self.chunk.locals[name]
+end
+
+-- Mark a name as captured in all ancestors up to and including `stop`.
+function compiler:_mark_captured(name, stop)
+	local q = self
+	while q do
+		local reg = q:get_local(name)
+		if reg ~= nil then
+			q.chunk.captured_locals[name] = reg
+		end
+		if q == stop then
+			break
+		end
+		q = q.parent
+	end
 end
 
 function compiler:push_loop()
@@ -359,6 +375,8 @@ function compiler:identifier(node)
 	while p do
 		if p:get_local(node.name) ~= nil then
 			self.chunk.upvalue_names[node.name] = true
+			-- mark captured in every ancestor up to where it lives
+			self.parent:_mark_captured(node.name, p)
 			local idx = self:add_constant(node.name)
 			self:emit(OPCODES.LOAD_UPVALUE, idx)
 			return
@@ -539,16 +557,23 @@ function compiler:_store_target(target)
 		if reg ~= nil then
 			self:emit(OPCODES.STORE_LOCAL, reg)
 		else
-			local is_upval = false
+			local found_at = nil
 			local p = self.parent
 			while p do
 				if p:get_local(target.name) ~= nil then
-					is_upval = true
+					found_at = p
 					break
 				end
 				p = p.parent
 			end
-			if is_upval then
+			if found_at then
+				-- mark captured in every ancestor up to where it lives
+				self.parent:_mark_captured(target.name, found_at)
+				-- Register in upvalue_names so the CLOSURE handler in the parent
+				-- wires up a shared cell for this name. Without this, write-only
+				-- upvalues (never read inside the closure) are invisible to CLOSURE
+				-- and the write goes into a disconnected cell the parent never sees.
+				self.chunk.upvalue_names[target.name] = true
 				local idx = self:add_constant(target.name)
 				self:emit(OPCODES.STORE_UPVALUE, idx)
 			else
@@ -921,11 +946,13 @@ function compiler:_table(node)
 			self:run(field.value)
 			local idx = self:add_constant(field.key)
 			self:emit(OPCODES.SET_FIELD, idx)
+			self:emit(OPCODES.POP) -- SET_FIELD leaves tbl on stack; discard it
 		elseif field.kind == "IndexedField" then
 			self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
 			self:run(field.key)
 			self:run(field.value)
 			self:emit(OPCODES.SET_INDEX)
+			self:emit(OPCODES.POP) -- SET_INDEX leaves tbl on stack; discard it
 		elseif field.kind == "ValueField" then
 			if field.value.kind == "Identifier" and field.value.name == "..." then
 				self:emit(OPCODES.LOAD_LOCAL, tbl_reg)
@@ -2020,7 +2047,7 @@ return parser
 
 end
 
-__linker_modules["src/vm.lua"] = function()
+__linker_modules["src/interpreter.lua"] = function()
 local shared = __linker_shared
 local vm = {}
 vm.__index = vm
@@ -2031,37 +2058,11 @@ do
 	OPCODES = export.CODES
 	OPNAMES = export.NAMES
 end
-
-local function make_vm_func(chunk, upvalue_cells)
-	local t = {
-		__type = "function",
-		chunk = chunk,
-		upvalue_cells = upvalue_cells,
-	}
-
-	local tAddress = tostring(t):gsub("table: ", "")
-
-	return setmetatable(t, {
-		__pairs = function(_)
-			error("attempt to iterate a function value", 2)
-		end,
-		__iter = function(_)
-			error("attempt to iterate a function value", 2)
-		end,
-		__tostring = function(f)
-			return "function: " .. tAddress
-		end,
-	})
-end
-
-local function is_vm_func(obj)
-	return type(obj) == "table" and rawget(obj, "__type") == "function"
-end
-
 function vm.new(chunk)
 	local self = setmetatable({
 		chunk = chunk,
 		globals = {},
+		metatables = {}, -- [table] = metatable, owned entirely by the VM
 	}, vm)
 	return self
 end
@@ -2070,17 +2071,11 @@ function vm:load_stdlib()
 	self.globals["print"] = print
 
 	self.globals["tonumber"] = tonumber
-	self.globals["type"] = function(what)
-		if is_vm_func(what) then
-			return "function"
-		end
-		local realType = type(what)
-		if realType == "table" and rawget(what, "__type") then
-			return rawget(what, "__type")
-		end
-		return realType
-	end
-	self.globals["typeof"] = typeof or type
+	self.globals["typeof"] = typeof
+	self.globals["type"] = type
+	self.globals["pairs"] = pairs
+	self.globals["ipairs"] = ipairs
+	self.globals["next"] = next
 	self.globals["error"] = error
 	self.globals["assert"] = assert
 	self.globals["unpack"] = table.unpack or unpack
@@ -2089,30 +2084,28 @@ function vm:load_stdlib()
 	self.globals["pcall"] = pcall
 	self.globals["xpcall"] = xpcall
 	self.globals["tostring"] = tostring
-	self.globals["pairs"] = function(t)
-		if is_vm_func(t) then
-			error("bad argument #1 to 'pairs' (table expected, got function)", 2)
-		end
-		return pairs(t)
+	self.globals["rawequal"] = rawequal
+	self.globals["rawlen"] = rawlen
+	local vm_ref = self
+	self.globals["setmetatable"] = function(tbl, mt)
+		vm_ref.metatables[tbl] = mt
+		return tbl
 	end
-	self.globals["ipairs"] = function(t)
-		if is_vm_func(t) then
-			error("bad argument #1 to 'ipairs' (table expected, got function)", 2)
+	self.globals["getmetatable"] = function(tbl)
+		local mt = vm_ref.metatables[tbl]
+		if mt ~= nil then
+			-- honour __metatable field
+			local guard = rawget(mt, "__metatable")
+			if guard ~= nil then
+				return guard
+			end
+			return mt
 		end
-		return ipairs(t)
-	end
-	self.globals["next"] = function(t, k)
-		if is_vm_func(t) then
-			error("bad argument #1 to 'next' (table expected, got function)", 2)
-		end
-		return next(t, k)
+		-- fallback for native Roblox objects
+		return getmetatable(tbl)
 	end
 	self.globals["rawget"] = rawget
 	self.globals["rawset"] = rawset
-	self.globals["rawequal"] = rawequal
-	self.globals["rawlen"] = rawlen
-	self.globals["setmetatable"] = setmetatable
-	self.globals["getmetatable"] = getmetatable
 	self.globals["loadstring"] = loadstring
 	self.globals["collectgarbage"] = collectgarbage
 	self.globals["warn"] = warn or print
@@ -2280,10 +2273,11 @@ function vm:make_frame(chunk, args, upvalue_cells)
 		locals = {},
 		stack = {},
 		top = 0,
-
 		upvalue_cells = upvalue_cells or {},
 		varargs = {},
+		local_cells = {},
 	}
+
 	if args then
 		local num_params = chunk.num_params or 0
 		for i, v in args do
@@ -2294,6 +2288,16 @@ function vm:make_frame(chunk, args, upvalue_cells)
 			end
 		end
 	end
+
+	-- AFTER args are loaded, pre-create cells for any locals captured by child closures.
+	-- Use captured_locals (compiler-preserved reg map) rather than chunk.locals, which
+	-- gets mutated by pop_scope and will be nil for locals defined in inner scopes.
+	for name, reg in chunk.captured_locals do
+		if not frame.local_cells[reg] then
+			frame.local_cells[reg] = { value = frame.locals[reg] }
+		end
+	end
+
 	return frame
 end
 
@@ -2316,33 +2320,49 @@ end
 function vm:_do_call(func, f_args)
 	if type(func) == "function" then
 		return table.pack(func(table.unpack(f_args)))
-	elseif is_vm_func(func) then
-		local res = self:execute(func.chunk, f_args, func.upvalue_cells)
-		return res or {}
-	elseif type(func) == "table" or type(func) == "userdata" then
-		local mt = getmetatable(func)
-		if mt then
-			local mm = rawget(mt, "__call")
+	elseif type(func) == "table" then
+		-- Use VM metatable registry for __call
+		local mm = self:_get_metafield(func, "__call")
+		if mm then
+			return self:_do_call(mm, { func, table.unpack(f_args) })
+		end
+		error(`attempt to call a table value`)
+	elseif type(func) == "userdata" then
+		-- Roblox userdata: try native call (e.g. CFrame, Vector3 constructors)
+		local ok, result = pcall(function()
+			return table.pack(func(table.unpack(f_args)))
+		end)
+		if ok then
+			return result
+		end
+		-- Also check native metatable for __call
+		local nmt = getmetatable(func)
+		if nmt then
+			local mm = rawget(nmt, "__call")
 			if mm then
-				local args2 = { func, table.unpack(f_args) }
-				return self:_do_call(mm, args2)
+				return self:_do_call(mm, { func, table.unpack(f_args) })
 			end
 		end
-		error(`attempt to call a {type(func)} value`)
+		error(`attempt to call a userdata value`)
 	else
 		error(`attempt to call a {type(func)} value`)
 	end
 end
 
-local STRING_METATABLE = { __index = string }
+-- ── Custom VM metatable system ──────────────────────────────────────────────
+-- Metatables are stored in self.metatables (a plain Lua table keyed by the
+-- VM table object). This bypasses native getmetatable/setmetatable entirely,
+-- avoiding rawget edge-cases and Roblox locked-metatable issues.
+
+function vm:_get_mt(obj)
+	if type(obj) == "string" then
+		return { __index = string }
+	end
+	return self.metatables[obj]
+end
 
 function vm:_get_metafield(obj, name)
-	local mt
-	if type(obj) == "string" then
-		mt = STRING_METATABLE
-	else
-		mt = getmetatable(obj)
-	end
+	local mt = self:_get_mt(obj)
 	if mt == nil then
 		return nil
 	end
@@ -2350,39 +2370,49 @@ function vm:_get_metafield(obj, name)
 end
 
 function vm:_get_index(tbl, key)
-	local raw
 	if type(tbl) == "string" then
 		return string[key]
 	end
-	raw = rawget(tbl, key)
+
+	-- Non-table (Roblox userdata, Instances, etc): use native indexing directly.
+	if type(tbl) ~= "table" then
+		local ok, val = pcall(function()
+			return tbl[key]
+		end)
+		return ok and val or nil
+	end
+
+	local raw = rawget(tbl, key)
 	if raw ~= nil then
 		return raw
 	end
 
-	local mt = getmetatable(tbl)
+	local mt = self.metatables[tbl]
 	if mt == nil then
 		return nil
 	end
+
 	local index = rawget(mt, "__index")
 	if index == nil then
 		return nil
 	end
-	if type(index) == "function" then
-		local res = table.pack(index(tbl, key))
-		return res[1]
-	elseif type(index) == "table" or type(index) == "userdata" then
+
+	local itype = type(index)
+	if itype == "function" then
+		return (self:_do_call(index, { tbl, key }))[1]
+	elseif itype == "table" then
 		return self:_get_index(index, key)
 	end
 	return nil
 end
 
 function vm:_set_index(tbl, key, val)
-	local mt = getmetatable(tbl)
-	if mt and rawget(tbl, key) == nil then
+	local mt = self.metatables[tbl]
+	if mt ~= nil and rawget(tbl, key) == nil then
 		local ni = rawget(mt, "__newindex")
-		if ni then
+		if ni ~= nil then
 			if type(ni) == "function" then
-				ni(tbl, key, val)
+				self:_do_call(ni, { tbl, key, val })
 				return
 			elseif type(ni) == "table" then
 				self:_set_index(ni, key, val)
@@ -2493,7 +2523,12 @@ function vm:execute(chunk, args, upvalue_cells)
 			self:push(frame, frame.chunk.constants[frame.chunk.code[frame.ip] + 1])
 		elseif op == OPCODES.LOAD_LOCAL then
 			frame.ip += 1
-			self:push(frame, frame.locals[frame.chunk.code[frame.ip]])
+			local reg = frame.chunk.code[frame.ip]
+			if frame.local_cells and frame.local_cells[reg] then
+				self:push(frame, frame.local_cells[reg].value)
+			else
+				self:push(frame, frame.locals[reg])
+			end
 		elseif op == OPCODES.STORE_LOCAL then
 			frame.ip += 1
 			local reg = frame.chunk.code[frame.ip]
@@ -2518,8 +2553,10 @@ function vm:execute(chunk, args, upvalue_cells)
 			self:push(frame, cell and cell.value or nil)
 		elseif op == OPCODES.STORE_UPVALUE then
 			frame.ip += 1
+
 			local name = frame.chunk.constants[frame.chunk.code[frame.ip] + 1]
 			local cell = frame.upvalue_cells[name]
+
 			if cell then
 				cell.value = self:pop(frame)
 			else
@@ -2711,7 +2748,10 @@ function vm:execute(chunk, args, upvalue_cells)
 				if frame.upvalue_cells[name] then
 					new_cells[name] = frame.upvalue_cells[name]
 				else
-					local reg = frame.chunk.locals[name]
+					-- Use captured_locals for the reg lookup: chunk.locals is mutated by
+					-- pop_scope and returns nil for locals from inner scopes, breaking
+					-- the shared-cell link needed for upvalue writes to propagate back.
+					local reg = frame.chunk.captured_locals[name]
 					if reg ~= nil then
 						if frame.local_cells and frame.local_cells[reg] then
 							new_cells[name] = frame.local_cells[reg]
@@ -2835,7 +2875,7 @@ return vm
 end
 
 -- [[ entry point: main.lua ]]
-local vm = __linker_require("src/vm.lua")
+local vm = __linker_require("src/interpreter.lua")
 
 vm:runSource([[
     print("VM Running!")
