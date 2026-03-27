@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-26 19:36:14
+-- built   : 2026-03-26 21:05:21
 -- entry   : main.lua
 -- inlined : 5 module(s) + entry
 
@@ -817,6 +817,9 @@ function compiler:numeric_for(node)
 end
 
 function compiler:generic_for(node)
+	table.foreach(node.names, print)
+	table.foreach(node.body, warn)
+
 	self:push_scope()
 	self:push_loop()
 
@@ -2032,6 +2035,30 @@ do
 	OPNAMES = export.NAMES
 end
 
+local VM_FUNC_MT = {
+	__pairs = function(_)
+		error("attempt to iterate a function value", 2)
+	end,
+	__iter = function(_)
+		error("attempt to iterate a function value", 2)
+	end,
+	__tostring = function(f)
+		return "function: 0xIFuckHellaBitches"
+	end,
+}
+
+local function make_vm_func(chunk, upvalue_cells)
+	return setmetatable({
+		__type = "function",
+		chunk = chunk,
+		upvalue_cells = upvalue_cells,
+	}, VM_FUNC_MT)
+end
+
+local function is_vm_func(obj)
+	return type(obj) == "table" and rawget(obj, "__type") == "function"
+end
+
 function vm.new(chunk)
 	local self = setmetatable({
 		chunk = chunk,
@@ -2042,25 +2069,50 @@ end
 
 function vm:load_stdlib()
 	self.globals["print"] = print
-	self.globals["tostring"] = tostring
+
 	self.globals["tonumber"] = tonumber
-	self.globals["type"] = type
+	self.globals["type"] = function(what)
+		if is_vm_func(what) then
+			return "function"
+		end
+		local realType = type(what)
+		if realType == "table" and rawget(what, "__type") then
+			return rawget(what, "__type")
+		end
+		return realType
+	end
 	self.globals["typeof"] = typeof or type
 	self.globals["error"] = error
 	self.globals["assert"] = assert
-	self.globals["ipairs"] = ipairs
-	self.globals["pairs"] = pairs
 	self.globals["unpack"] = table.unpack or unpack
 	self.globals["select"] = select
 	self.globals["pcall"] = pcall
 	self.globals["xpcall"] = xpcall
+	self.globals["tostring"] = tostring
+	self.globals["pairs"] = function(t)
+		if is_vm_func(t) then
+			error("bad argument #1 to 'pairs' (table expected, got function)", 2)
+		end
+		return pairs(t)
+	end
+	self.globals["ipairs"] = function(t)
+		if is_vm_func(t) then
+			error("bad argument #1 to 'ipairs' (table expected, got function)", 2)
+		end
+		return ipairs(t)
+	end
+	self.globals["next"] = function(t, k)
+		if is_vm_func(t) then
+			error("bad argument #1 to 'next' (table expected, got function)", 2)
+		end
+		return next(t, k)
+	end
 	self.globals["rawget"] = rawget
 	self.globals["rawset"] = rawset
 	self.globals["rawequal"] = rawequal
 	self.globals["rawlen"] = rawlen
 	self.globals["setmetatable"] = setmetatable
 	self.globals["getmetatable"] = getmetatable
-	self.globals["next"] = next
 	self.globals["loadstring"] = loadstring
 	self.globals["collectgarbage"] = collectgarbage
 	self.globals["warn"] = warn or print
@@ -2264,7 +2316,7 @@ end
 function vm:_do_call(func, f_args)
 	if type(func) == "function" then
 		return table.pack(func(table.unpack(f_args)))
-	elseif type(func) == "table" and func.__type == "function" then
+	elseif is_vm_func(func) then
 		local res = self:execute(func.chunk, f_args, func.upvalue_cells)
 		return res or {}
 	elseif type(func) == "table" or type(func) == "userdata" then
@@ -2677,11 +2729,7 @@ function vm:execute(chunk, args, upvalue_cells)
 				end
 			end
 
-			self:push(frame, {
-				__type = "function",
-				chunk = sub_chunk,
-				upvalue_cells = new_cells,
-			})
+			self:push(frame, make_vm_func(sub_chunk, new_cells))
 		elseif op == OPCODES.CALL then
 			frame.ip += 1
 			local arg_count = frame.chunk.code[frame.ip]
