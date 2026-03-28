@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-27 23:52:26
+-- built   : 2026-03-28 00:17:04
 -- entry   : main.lua
 -- inlined : 6 module(s) + entry
 
@@ -4163,26 +4163,26 @@ local lexer_mod = __linker_require("src/lexer.lua")
 local parser_mod = __linker_require("src/parser.lua")
 local macros = __linker_require("src/macros.lua")
 
-function vm:runSource(source, debug)
+function vm:run_source(source, debug)
 	debug = debug or {}
 
-	local startLex = os.clock()
+	local start_lex = os.clock()
 	local tokens = lexer_mod.new(source):run()
-	local endLex = os.clock()
+	local end_lex = os.clock()
 
 	local ast = parser_mod.new(tokens):run()
 
-	local endAst = os.clock()
+	local end_ast = os.clock()
 
 	ast = macros.expand(ast, lexer_mod, parser_mod)
 
-	local endMacros = os.clock()
+	local end_macros = os.clock()
 
 	local comp = compiler_mod.new()
 
 	comp:run(ast)
 
-	local endComp = os.clock()
+	local end_comp = os.clock()
 
 	local instance = vm.new(comp.chunk)
 	instance:load_stdlib()
@@ -4191,7 +4191,7 @@ function vm:runSource(source, debug)
 	instance.globals["_G"] = instance.globals
 	local succ, err = pcall(instance.run, instance)
 
-	local endRan = os.clock()
+	local end_ran = os.clock()
 	if not succ then
 		if debug then
 			error(err)
@@ -4205,11 +4205,11 @@ function vm:runSource(source, debug)
 		print(
 			string.format(
 				"took %.0f [lexing: %.0f] [parsing: %.0f] [compilation: %.0f] [execution: %.0f] (microseconds)",
-				(endRan - startLex) * 1000000,
-				(endAst - endLex) * 1000000,
-				(endMacros - endAst) * 1000000,
-				(endComp - endMacros) * 1000000,
-				(endRan - endComp) * 1000000
+				(end_ran - start_lex) * 1000000,
+				(end_ast - end_lex) * 1000000,
+				(end_macros - end_ast) * 1000000,
+				(end_comp - end_macros) * 1000000,
+				(end_ran - end_comp) * 1000000
 			)
 		)
 	end
