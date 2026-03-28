@@ -1,3 +1,6 @@
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local BINARY_PRECEDENCE = {
 	["or"] = 1,
 	["and"] = 2,

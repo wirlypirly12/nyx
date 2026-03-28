@@ -1,6 +1,8 @@
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local OPCODES = {}
 local OPNAMES = {
-
 	"LOAD_CONST",
 	"LOAD_LOCAL",
 	"STORE_LOCAL",

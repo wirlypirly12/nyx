@@ -1,3 +1,6 @@
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local lexer = {}
 lexer.__index = lexer
 

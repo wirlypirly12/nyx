@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-27 18:58:49
+-- built   : 2026-03-27 23:37:19
 -- entry   : main.lua
 -- inlined : 6 module(s) + entry
 
@@ -24,9 +24,11 @@ end
 
 __linker_modules["src/opcodes.lua"] = function()
 local shared = __linker_shared
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local OPCODES = {}
 local OPNAMES = {
-
 	"LOAD_CONST",
 	"LOAD_LOCAL",
 	"STORE_LOCAL",
@@ -98,6 +100,9 @@ end
 
 __linker_modules["src/compiler.lua"] = function()
 local shared = __linker_shared
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local compiler = {}
 compiler.__index = compiler
 
@@ -1163,6 +1168,9 @@ end
 
 __linker_modules["src/lexer.lua"] = function()
 local shared = __linker_shared
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local lexer = {}
 lexer.__index = lexer
 
@@ -1589,6 +1597,9 @@ end
 
 __linker_modules["src/parser.lua"] = function()
 local shared = __linker_shared
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local BINARY_PRECEDENCE = {
 	["or"] = 1,
 	["and"] = 2,
@@ -2227,6 +2238,9 @@ end
 
 __linker_modules["src/macros.lua"] = function()
 local shared = __linker_shared
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local macros = {}
 
 local function has_attr(node, name)
@@ -2929,6 +2943,9 @@ end
 
 __linker_modules["src/interpreter.lua"] = function()
 local shared = __linker_shared
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local vm = {}
 vm.__index = vm
 
@@ -4203,6 +4220,9 @@ return vm
 end
 
 -- [[ entry point: main.lua ]]
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local vm = __linker_require("src/interpreter.lua")
 
 vm:runSource([[

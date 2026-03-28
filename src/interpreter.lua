@@ -1,3 +1,6 @@
+-- MIT License
+-- Copyright (c) 2026 Bradley
+
 local vm = {}
 vm.__index = vm
 
