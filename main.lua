@@ -8,4 +8,8 @@ vm:runSource([[
     print("VM Running!")
 ]])
 
-getgenv().vm = vm
+if getgenv then
+	getgenv().vm = vm
+end
+
+return vm

@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-27 23:37:19
+-- built   : 2026-03-27 23:52:26
 -- entry   : main.lua
 -- inlined : 6 module(s) + entry
 
@@ -4222,6 +4222,7 @@ end
 -- [[ entry point: main.lua ]]
 -- MIT License
 -- Copyright (c) 2026 Bradley
+-- https://github.com/wirlypirly12/nyx
 
 local vm = __linker_require("src/interpreter.lua")
 
@@ -4229,5 +4230,9 @@ vm:runSource([[
     print("VM Running!")
 ]])
 
-getgenv().vm = vm
+if getgenv then
+	getgenv().vm = vm
+end
+
+return vm
 
