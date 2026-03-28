@@ -1,7 +1,7 @@
 --!nocheck
 --!nolint
 -- [[ linker bundled output ]]
--- built   : 2026-03-28 00:17:04
+-- built   : 2026-03-28 00:27:40
 -- entry   : main.lua
 -- inlined : 6 module(s) + entry
 
@@ -4226,7 +4226,7 @@ end
 
 local vm = __linker_require("src/interpreter.lua")
 
-vm:runSource([[
+vm:run_source([[
     print("VM Running!")
 ]])
 

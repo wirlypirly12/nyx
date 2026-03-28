@@ -4,7 +4,7 @@
 
 local vm = require("./src/interpreter")
 
-vm:runSource([[
+vm:run_source([[
     print("VM Running!")
 ]])
 
