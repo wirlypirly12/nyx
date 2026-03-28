@@ -17,14 +17,14 @@ clone the `src` folder and require the `src\interpreter.lua` module.
 ## usage
 ```lua
 local interpreter = require("interpreter")
-interpreter:runSource("print('hello world')")
+interpreter:run_source("print('hello world')")
 ```
 
 with debug options:
 ```lua
-interpreter:runSource(source, { b = true })  -- dump instructions
-interpreter:runSource(source, { m = true })  -- show pipeline metrics (lexer, parser, compiler, vm timings)
-interpreter:runSource(source, { b = true, m = true })  -- both
+interpreter:run_source(source, { b = true })  -- dump instructions
+interpreter:run_source(source, { m = true })  -- show pipeline metrics (lexer, parser, compiler, vm)
+interpreter:run_source(source, { b = true, m = true })  -- both
 ```
 
 ## roadmap
